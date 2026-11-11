@@ -3,11 +3,42 @@ from collections import Counter
 from flask import Flask, request
 from datetime import datetime, timezone
 import json
+import os
 from html import escape
+import psycopg2
 
 app = Flask(__name__)
 
 LOG_FILE = "telemetry.jsonl"
+
+
+def ensure_table():
+    """Create the telemetry table on startup if it does not already exist."""
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        return
+    try:
+        with psycopg2.connect(database_url, sslmode="require", connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS public.telemetry_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        timestamp TIMESTAMPTZ NOT NULL,
+                        ip_address TEXT,
+                        method TEXT,
+                        path TEXT,
+                        user_agent TEXT,
+                        classification TEXT
+                    )
+                    """
+                )
+        app.logger.warning("PostgreSQL telemetry table is ready")
+    except Exception:
+        app.logger.exception("Could not create or check the PostgreSQL telemetry table")
+
+
+ensure_table()
 
 
 def classify_request(path):
@@ -59,12 +90,44 @@ def log_request():
         "method": request.method,
         "path": request.path,
         "user_agent": request.headers.get("User-Agent"),
-        "ip": request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0].strip(),
+        # Render supplies X-Forwarded-For. Use the first address in the chain.
+        "ip": request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip(),
         "classification": classify_request(request.path)
     }
 
-    with open(LOG_FILE, "a", encoding="utf-8") as file:
-        file.write(json.dumps(event) + "\n")
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        # Keep local development usable if DATABASE_URL is not configured.
+        with open(LOG_FILE, "a", encoding="utf-8") as file:
+            file.write(json.dumps(event) + "\n")
+        return
+
+    try:
+        with psycopg2.connect(database_url, sslmode="require", connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO public.telemetry_events
+                        (timestamp, ip_address, method, path, user_agent, classification)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        event["timestamp"],
+                        event["ip"],
+                        event["method"],
+                        event["path"],
+                        event["user_agent"],
+                        event["classification"],
+                    ),
+                )
+    except Exception:
+        app.logger.exception("Could not save telemetry to PostgreSQL")
+        # Preserve a local fallback record if the database is temporarily unavailable.
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as file:
+                file.write(json.dumps(event) + "\n")
+        except OSError:
+            app.logger.exception("Could not save telemetry to the local fallback log")
 
 
 @app.before_request
@@ -302,42 +365,77 @@ def dashboard():
     classifications = Counter()
     recent_events = []
 
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8") as file:
-            for line in file:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        try:
+            with psycopg2.connect(database_url, sslmode="require", connect_timeout=5) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT timestamp, ip_address, method, path, user_agent, classification
+                        FROM public.telemetry_events
+                        ORDER BY timestamp ASC
+                        """
+                    )
+                    rows = cur.fetchall()
 
+            for timestamp, ip_address, method, path, user_agent, classification in rows:
+                event = {
+                    "timestamp": timestamp.isoformat() if timestamp else "Unknown",
+                    "ip": ip_address,
+                    "method": method,
+                    "path": path,
+                    "user_agent": user_agent,
+                    "classification": classification or "Unknown (older log)",
+                }
                 recent_events.append(event)
                 total_requests += 1
+                if ip_address:
+                    ips.add(ip_address)
+                routes[path or "Unknown"] += 1
+                classifications[event["classification"]] += 1
 
-                ip = event.get("ip")
-                if ip:
-                    ips.add(ip)
-
-                path = event.get("path") or "Unknown"
-                routes[path] += 1
-
-                classification = (
-                    event.get("classification")
-                    or "Unknown (older log)"
-                )
-                classifications[classification] += 1
-
-    except FileNotFoundError:
-        pass
+        except Exception:
+            app.logger.exception("Could not read telemetry from PostgreSQL")
+            # Show local fallback records if the database is temporarily unavailable.
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8") as file:
+                    for line in file:
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        recent_events.append(event)
+                        total_requests += 1
+                        if event.get("ip"):
+                            ips.add(event["ip"])
+                        routes[event.get("path") or "Unknown"] += 1
+                        classifications[event.get("classification") or "Unknown (older log)"] += 1
+            except FileNotFoundError:
+                pass
+    else:
+        # Local development mode uses the JSONL file.
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as file:
+                for line in file:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    recent_events.append(event)
+                    total_requests += 1
+                    if event.get("ip"):
+                        ips.add(event["ip"])
+                    routes[event.get("path") or "Unknown"] += 1
+                    classifications[event.get("classification") or "Unknown (older log)"] += 1
+        except FileNotFoundError:
+            pass
 
     normal_requests = classifications.get("Normal request", 0)
-
     suspicious_requests = sum(
         count
         for name, count in classifications.items()
-        if name not in [
-            "Normal request",
-            "Unknown (older log)"
-        ]
+        if name not in ["Normal request", "Unknown (older log)"]
     )
 
     recent_rows = ""
@@ -354,6 +452,7 @@ def dashboard():
         {escape(str(event.get("classification") or "Unknown"))}
     </span>
 </td>
+        </tr>
         """
 
     route_rows = "".join(
@@ -515,4 +614,4 @@ def dashboard():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)

@@ -1,5 +1,10 @@
 .venv/
 __pycache__/
-telemetry.jsonl
 *.pyc
 .env
+
+# Telemetry logs contain visitor IP addresses - never commit them
+*.jsonl
+
+# Local scratch copies
+app_backup.py
