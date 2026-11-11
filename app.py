@@ -132,6 +132,9 @@ def log_request():
 
 @app.before_request
 def record_request():
+    # Render's health checker hits /health every few seconds; don't record it as telemetry.
+    if request.path == "/health":
+        return
     log_request()
 
 
