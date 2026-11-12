@@ -1,620 +1,212 @@
+"""
+Low-interaction web honeypot (FastAPI) for Render, backed by Supabase Postgres.
+- Serves fake exposed files / admin portals and logs EVERY request to Postgres.
+- Recovers the real client IP behind Render's proxy chain (X-Forwarded-For).
+- Also prints each event to stdout (prefixed "HP ") so Render's log stream
+  holds a readable backup copy you can screenshot.
+Nothing here executes attacker input; all credentials/keys below are fake.
 
-from collections import Counter
-from flask import Flask, request
+Requires schema.sql to have been run once against the Supabase database
+(Supabase dashboard -> SQL Editor -> paste schema.sql -> Run).
+"""
+import asyncio, ipaddress, json, os, secrets, uuid
 from datetime import datetime, timezone
-import json
-import os
-from html import escape
-import psycopg2
+from urllib.parse import parse_qs
 
-app = Flask(__name__)
+from psycopg_pool import ConnectionPool
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
-LOG_FILE = "telemetry.jsonl"
+DATABASE_URL = os.environ["DATABASE_URL"]  # Supabase: Project Settings -> Database -> Connection string (URI, Session pooler)
+EXPORT_TOKEN = os.getenv("EXPORT_TOKEN", "")
+MY_IPS = {i.strip() for i in os.getenv("MY_IPS", "").split(",") if i.strip()}
+MAX_BODY = 4096
 
+pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=5, open=True,
+                      kwargs={"prepare_threshold": None, "connect_timeout": 5})  # works with session AND transaction pooler
 
-def ensure_table():
-    """Create the telemetry table on startup if it does not already exist."""
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        return
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)  # hide FastAPI's own giveaways
+
+# ---------------------------------------------------------------- client IP
+def _ip(s):
     try:
-        with psycopg2.connect(database_url, sslmode="require", connect_timeout=5) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS public.telemetry_events (
-                        id BIGSERIAL PRIMARY KEY,
-                        timestamp TIMESTAMPTZ NOT NULL,
-                        ip_address TEXT,
-                        method TEXT,
-                        path TEXT,
-                        user_agent TEXT,
-                        classification TEXT
-                    )
-                    """
-                )
-        app.logger.warning("PostgreSQL telemetry table is ready")
+        return ipaddress.ip_address(s.strip())
+    except ValueError:
+        return None
+
+def client_ip(request: Request):
+    """Return (client_ip, raw_xff). Order of trust:
+    1. CF-Connecting-IP / True-Client-IP (set by Cloudflare, which fronts Render)
+    2. first PUBLIC address in X-Forwarded-For
+    3. socket peer (the proxy itself - last resort)
+    NOTE: XFF can be forged by the attacker (they can pre-fill it), so the raw
+    header is always logged; verify your own test request from a known IP."""
+    h = request.headers
+    for name in ("cf-connecting-ip", "true-client-ip"):
+        ip = _ip(h.get(name, ""))
+        if ip:
+            return str(ip), h.get("x-forwarded-for", "")
+    xff = h.get("x-forwarded-for", "")
+    for part in xff.split(","):
+        ip = _ip(part)
+        if ip and ip.is_global:
+            return str(ip), xff
+    return (request.client.host if request.client else "unknown"), xff
+
+# ------------------------------------------------------------------ logging
+INSERT_SQL = """
+insert into events (id, ts, ip, xff, peer, method, path, query, ua, host,
+                     referer, content_type, header_names, body, creds, is_mine)
+values (%(id)s, %(ts)s, %(ip)s, %(xff)s, %(peer)s, %(method)s, %(path)s, %(query)s,
+        %(ua)s, %(host)s, %(referer)s, %(content_type)s, %(header_names)s, %(body)s,
+        %(creds)s, %(is_mine)s)
+on conflict (id) do nothing
+"""
+
+def _insert_sync(ev: dict):
+    row = {**ev,
+           "ip": ev["ip"] if _ip(ev["ip"]) else None,   # inet column: must be null, not "unknown"
+           "header_names": json.dumps(ev["header_names"]),
+           "creds": json.dumps(ev["creds"])}
+    with pool.connection(timeout=5) as conn:   # fail fast if DB is down; never hang a scanner's request
+        conn.execute(INSERT_SQL, row)
+
+async def log_event(ev: dict):
+    print("HP " + json.dumps(ev, ensure_ascii=False), flush=True)  # readable backup in Render's log tab
+    try:
+        await asyncio.to_thread(_insert_sync, ev)
+    except Exception as e:
+        print("HP-DB-ERROR " + str(e), flush=True)  # DB hiccup should never break the lure response
+
+def extract_creds(ctype: str, body: str):
+    creds = {}
+    try:
+        data = json.loads(body) if "json" in ctype else {k: v[0] for k, v in parse_qs(body).items()}
     except Exception:
-        app.logger.exception("Could not create or check the PostgreSQL telemetry table")
+        return creds
+    if not isinstance(data, dict):
+        return creds
+    for k, v in data.items():
+        kl = str(k).lower()
+        if kl in ("username", "user", "log", "login", "email", "userid", "uname"):
+            creds["username"] = str(v)[:100]
+        elif kl in ("password", "pass", "pwd", "passwd"):
+            creds["password"] = str(v)[:100]
+    return creds
 
+# -------------------------------------------------------------------- lures
+FAKE_ENV = """APP_ENV=production
+APP_KEY=base64:kf83jHs0Zk2mQ9xTn1vLw7Yb4RcE6uPdA5gS8hJ0tXo=
+DB_HOST=10.0.3.14
+DB_DATABASE=orders
+DB_USERNAME=svc_backup
+DB_PASSWORD=Winter2024!Prod
+AWS_ACCESS_KEY_ID=AKIAFAKEHONEYPOT00000
+AWS_SECRET_ACCESS_KEY=honeypot/notreal/0000000000000000
+"""
+FAKE_GIT = """[core]
+\trepositoryformatversion = 0
+\tfilemode = true
+[remote "origin"]
+\turl = https://github.com/acme-corp/internal-portal.git
+\tfetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+\tremote = origin
+\tmerge = refs/heads/main
+"""
+FAKE_ACTUATOR = {"activeProfiles": ["prod"], "propertySources": [{"name": "systemEnvironment",
+                 "properties": {"DB_PASSWORD": {"value": "******"}}}]}
+ROBOTS = "User-agent: *\nDisallow: /admin/\nDisallow: /backup/\nDisallow: /.git/\nDisallow: /phpmyadmin/\nDisallow: /internal/\n"
+NOT_FOUND = ("<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\"><html><head><title>404 Not Found</title></head>"
+             "<body><h1>Not Found</h1><p>The requested URL was not found on this server.</p><hr>"
+             "<address>Apache/2.4.41 (Ubuntu) Server</address></body></html>")
 
-ensure_table()
+def login_page(title, err=""):
+    return f"""<html><head><title>{title}</title></head><body style="font-family:sans-serif;background:#f1f1f1">
+<div style="width:320px;margin:80px auto;background:#fff;padding:24px;border:1px solid #ccc">
+<h2>{title}</h2>{'<p style="color:#c00">'+err+'</p>' if err else ''}
+<form method="post"><input name="username" placeholder="Username"><br><br>
+<input name="password" type="password" placeholder="Password"><br><br>
+<button type="submit">Log in</button></form></div></body></html>"""
 
+def build_response(path: str, method: str) -> Response:
+    p = path.lower()
+    last = p.rsplit("/", 1)[-1]
+    hdr = {"Server": "Apache/2.4.41 (Ubuntu)", "X-Powered-By": "PHP/7.4.3"}
+    if last.startswith(".env"):
+        return PlainTextResponse(FAKE_ENV, headers=hdr)
+    if "/.git/config" in p:
+        return PlainTextResponse(FAKE_GIT, headers=hdr)
+    if "/.git/head" in p:
+        return PlainTextResponse("ref: refs/heads/main\n", headers=hdr)
+    if p == "/robots.txt":
+        return PlainTextResponse(ROBOTS, headers=hdr)
+    if "actuator" in p:
+        return Response(json.dumps(FAKE_ACTUATOR), media_type="application/json", headers=hdr)
+    if "server-status" in p:
+        return PlainTextResponse("Apache Server Status for localhost\nServer uptime: 41 days 3 hours\nTotal accesses: 8841203\n", headers=hdr)
+    if p.endswith(".sql") or "backup" in last or p.endswith((".bak", ".zip", ".tar.gz", ".gz")):
+        return PlainTextResponse("-- MySQL dump 10.13  Distrib 5.7.42\n-- Host: localhost  Database: orders\n-- (truncated)\n", headers=hdr)
+    if p in ("/config.json", "/config.php", "/wp-config.php.bak", "/config.yml"):
+        return Response(json.dumps({"db": {"host": "10.0.3.14", "user": "svc_backup", "pass": "Winter2024!Prod"}}),
+                        media_type="application/json", headers=hdr)
+    err = "Invalid username or password." if method == "POST" else ""
+    if "wp-login" in p or p.startswith("/wp-admin"):
+        return HTMLResponse(login_page("WordPress &rsaquo; Log In", err), headers=hdr)
+    if "phpmyadmin" in p or "pma" in p or "adminer" in p:
+        return HTMLResponse(login_page("phpMyAdmin", err.replace("Invalid username or password.", "Cannot log in to the MySQL server")), headers=hdr)
+    if p.startswith(("/admin", "/administrator", "/login", "/manager", "/console", "/cpanel", "/boaform", "/signin", "/user/login")):
+        return HTMLResponse(login_page("Administration Portal", err), headers=hdr)
+    if p == "/":
+        return HTMLResponse("<html><head><title>Welcome</title></head><body><h1>It works!</h1></body></html>", headers=hdr)
+    return HTMLResponse(NOT_FOUND, status_code=404, headers=hdr)
 
-def classify_request(path):
-    suspicious_paths = {
-        "/admin": "Possible admin panel discovery",
-        "/administrator": "Possible administrator panel discovery",
-        "/admin/login": "Possible administrative login probing",
+# ------------------------------------------------------------------- routes
+@app.get("/healthz")
+async def healthz():           # Render health check + uptime pinger; NOT logged
+    return PlainTextResponse("ok")
 
-        "/login": "Possible login endpoint probing",
-        "/wp-admin": "Possible WordPress admin probing",
-        "/wp-login.php": "Possible WordPress login probing",
+@app.get("/_export/{token}")
+async def export(token: str, limit: int = 5000):
+    # download your logs as JSON lines (secret path from EXPORT_TOKEN), newest first
+    if not (EXPORT_TOKEN and secrets.compare_digest(token, EXPORT_TOKEN)):
+        return HTMLResponse(NOT_FOUND, status_code=404)
+    def _fetch():
+        with pool.connection(timeout=10) as conn:
+            cur = conn.execute(
+                "select id, ts, ip, xff, peer, method, path, query, ua, host, referer, "
+                "content_type, header_names, body, creds, is_mine from events "
+                "order by ts desc limit %s", (limit,))
+            cols = [c.name for c in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+    rows = await asyncio.to_thread(_fetch)
+    lines = "\n".join(json.dumps(r, default=str) for r in rows)
+    return PlainTextResponse(lines, media_type="application/x-ndjson")
 
-        "/phpmyadmin": "Possible database administration probing",
-        "/server-status": "Possible server status probing",
-        "/server-info": "Possible server information probing",
-
-        "/.env": "Possible configuration file probing",
-        "/.git/config": "Possible exposed Git repository probing",
-        "/config.php": "Possible configuration file probing",
-        "/configuration.php": "Possible configuration file probing",
-        "/database.sql": "Possible database backup probing",
-        "/backup.zip": "Possible backup archive probing",
-
-        "/api": "Possible API endpoint discovery",
-        "/api/login": "Possible API login probing",
-        "/api/v1/login": "Possible API login probing",
-
-        "/xmlrpc.php": "Possible XML-RPC endpoint probing",
-        "/manager/html": "Possible application manager probing",
-
-        "/actuator": "Possible application actuator probing",
-        "/actuator/env": "Possible environment information probing",
-
-        "/console": "Possible application console probing",
-        "/debug": "Possible debug endpoint probing",
-        "/test": "Possible test endpoint probing",
-        "/phpinfo.php": "Possible PHP information probing",
-
-        "/robots.txt": "Possible site reconnaissance",
-        "/robot.txt": "Possible site reconnaissance",
-        "/reboot.txt": "Unusual file probing"
-    }
-
-    return suspicious_paths.get(path, "Normal request")
-
-def log_request():
-    event = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
+async def catch_all(request: Request, full_path: str):
+    raw = await request.body()
+    body = raw[:MAX_BODY].decode("utf-8", "replace")
+    ctype = request.headers.get("content-type", "")
+    ip, xff = client_ip(request)
+    h = request.headers
+    ev = {
+        "id": uuid.uuid4().hex[:12],
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ip": ip,
+        "xff": xff,
+        "peer": request.client.host if request.client else None,
         "method": request.method,
-        "path": request.path,
-        "user_agent": request.headers.get("User-Agent"),
-        # Render supplies X-Forwarded-For. Use the first address in the chain.
-        "ip": request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip(),
-        "classification": classify_request(request.path)
+        "path": request.url.path,
+        "query": request.url.query,
+        "ua": h.get("user-agent", ""),
+        "host": h.get("host", ""),
+        "referer": h.get("referer", ""),
+        "content_type": ctype,
+        "header_names": sorted(h.keys()),
+        "body": body,
+        "creds": extract_creds(ctype, body) if request.method in ("POST", "PUT") else {},
+        "is_mine": ip in MY_IPS,
     }
-
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        # Keep local development usable if DATABASE_URL is not configured.
-        with open(LOG_FILE, "a", encoding="utf-8") as file:
-            file.write(json.dumps(event) + "\n")
-        return
-
-    try:
-        with psycopg2.connect(database_url, sslmode="require", connect_timeout=5) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO public.telemetry_events
-                        (timestamp, ip_address, method, path, user_agent, classification)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        event["timestamp"],
-                        event["ip"],
-                        event["method"],
-                        event["path"],
-                        event["user_agent"],
-                        event["classification"],
-                    ),
-                )
-    except Exception:
-        app.logger.exception("Could not save telemetry to PostgreSQL")
-        # Preserve a local fallback record if the database is temporarily unavailable.
-        try:
-            with open(LOG_FILE, "a", encoding="utf-8") as file:
-                file.write(json.dumps(event) + "\n")
-        except OSError:
-            app.logger.exception("Could not save telemetry to the local fallback log")
-
-
-@app.before_request
-def record_request():
-    # Render's health checker hits /health every few seconds; don't record it as telemetry.
-    if request.path == "/health":
-        return
-    log_request()
-
-
-@app.route("/")
-def home():
-    return "Telemetry & Threat Analysis Honeypot"
-
-
-@app.route("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.route("/admin")
-def admin():
-    return {
-        "message": "Admin portal detected",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/administrator")
-def administrator():
-    return {
-        "message": "Administrator portal detected",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/admin/login", methods=["GET", "POST"])
-def admin_login():
-    return {
-        "message": "Administrative login endpoint monitored",
-        "status": "disabled"
-    }, 403
-
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    return {
-        "message": "Login endpoint monitored",
-        "status": "disabled"
-    }, 403
-
-
-@app.route("/wp-admin")
-def wp_admin():
-    return {
-        "message": "WordPress administration area detected",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/wp-login.php", methods=["GET", "POST"])
-def wp_login():
-    return {
-        "message": "WordPress login endpoint monitored",
-        "status": "disabled"
-    }, 403
-
-
-@app.route("/phpmyadmin")
-def phpmyadmin():
-    return {
-        "message": "Database administration interface detected",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/server-status")
-def server_status():
-    return {
-        "message": "Server status endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/server-info")
-def server_info():
-    return {
-        "message": "Server information endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/.env")
-def env_file():
-    return {
-        "message": "Configuration file access monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/.git/config")
-def git_config():
-    return {
-        "message": "Repository configuration access monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/config.php")
-def config_php():
-    return {
-        "message": "Configuration file access monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/configuration.php")
-def configuration_php():
-    return {
-        "message": "Configuration file access monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/database.sql")
-def database_sql():
-    return {
-        "message": "Database backup access monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/backup.zip")
-def backup_zip():
-    return {
-        "message": "Backup archive access monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/api")
-def api():
-    return {
-        "message": "API endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/api/login", methods=["GET", "POST"])
-def api_login():
-    return {
-        "message": "API login endpoint monitored",
-        "status": "disabled"
-    }, 403
-
-
-@app.route("/api/v1/login", methods=["GET", "POST"])
-def api_v1_login():
-    return {
-        "message": "API v1 login endpoint monitored",
-        "status": "disabled"
-    }, 403
-
-
-@app.route("/xmlrpc.php", methods=["GET", "POST"])
-def xmlrpc():
-    return {
-        "message": "XML-RPC endpoint monitored",
-        "status": "disabled"
-    }, 403
-
-
-@app.route("/manager/html")
-def manager_html():
-    return {
-        "message": "Application manager endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/actuator")
-def actuator():
-    return {
-        "message": "Application actuator endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/actuator/env")
-def actuator_env():
-    return {
-        "message": "Application environment endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/console")
-def console():
-    return {
-        "message": "Application console endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/debug")
-def debug():
-    return {
-        "message": "Debug endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/test")
-def test():
-    return {
-        "message": "Test endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-
-@app.route("/phpinfo.php")
-def phpinfo():
-    return {
-        "message": "PHP information endpoint monitored",
-        "status": "restricted"
-    }, 403
-
-@app.route("/robots.txt")
-def robots():
-    return "User-agent: *\nDisallow: /admin\n"
-
-
-@app.route("/dashboard")
-def dashboard():
-    total_requests = 0
-    ips = set()
-    routes = Counter()
-    classifications = Counter()
-    recent_events = []
-
-    database_url = os.environ.get("DATABASE_URL")
-    if database_url:
-        try:
-            with psycopg2.connect(database_url, sslmode="require", connect_timeout=5) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT timestamp, ip_address, method, path, user_agent, classification
-                        FROM public.telemetry_events
-                        ORDER BY timestamp ASC
-                        """
-                    )
-                    rows = cur.fetchall()
-
-            for timestamp, ip_address, method, path, user_agent, classification in rows:
-                event = {
-                    "timestamp": timestamp.isoformat() if timestamp else "Unknown",
-                    "ip": ip_address,
-                    "method": method,
-                    "path": path,
-                    "user_agent": user_agent,
-                    "classification": classification or "Unknown (older log)",
-                }
-                recent_events.append(event)
-                total_requests += 1
-                if ip_address:
-                    ips.add(ip_address)
-                routes[path or "Unknown"] += 1
-                classifications[event["classification"]] += 1
-
-        except Exception:
-            app.logger.exception("Could not read telemetry from PostgreSQL")
-            # Show local fallback records if the database is temporarily unavailable.
-            try:
-                with open(LOG_FILE, "r", encoding="utf-8") as file:
-                    for line in file:
-                        try:
-                            event = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        recent_events.append(event)
-                        total_requests += 1
-                        if event.get("ip"):
-                            ips.add(event["ip"])
-                        routes[event.get("path") or "Unknown"] += 1
-                        classifications[event.get("classification") or "Unknown (older log)"] += 1
-            except FileNotFoundError:
-                pass
-    else:
-        # Local development mode uses the JSONL file.
-        try:
-            with open(LOG_FILE, "r", encoding="utf-8") as file:
-                for line in file:
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    recent_events.append(event)
-                    total_requests += 1
-                    if event.get("ip"):
-                        ips.add(event["ip"])
-                    routes[event.get("path") or "Unknown"] += 1
-                    classifications[event.get("classification") or "Unknown (older log)"] += 1
-        except FileNotFoundError:
-            pass
-
-    normal_requests = classifications.get("Normal request", 0)
-    suspicious_requests = sum(
-        count
-        for name, count in classifications.items()
-        if name not in ["Normal request", "Unknown (older log)"]
-    )
-
-    recent_rows = ""
-
-    for event in recent_events[-10:][::-1]:
-        recent_rows += f"""
-        <tr>
-            <td>{escape(str(event.get("timestamp", "Unknown")))}</td>
-            <td>{escape(str(event.get("ip", "Unknown")))}</td>
-            <td>{escape(str(event.get("method", "Unknown")))}</td>
-            <td>{escape(str(event.get("path", "Unknown")))}</td>
-            <td>
-    <span class="classification">
-        {escape(str(event.get("classification") or "Unknown"))}
-    </span>
-</td>
-        </tr>
-        """
-
-    route_rows = "".join(
-        f"<tr><td>{escape(str(route))}</td><td>{count}</td></tr>"
-        for route, count in routes.most_common()
-    )
-
-    classification_rows = "".join(
-        f"<tr><td>{escape(str(name))}</td><td>{count}</td></tr>"
-        for name, count in classifications.most_common()
-    )
-
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Telemetry Dashboard</title>
-        <link rel="stylesheet" href="/static/css/style.css">
-
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background: #f4f7fb;
-                margin: 0;
-                padding: 30px;
-            }}
-
-            h1 {{
-                color: #172033;
-            }}
-
-            .cards {{
-                display: flex;
-                gap: 20px;
-                flex-wrap: wrap;
-                margin-bottom: 30px;
-            }}
-
-            .card {{
-                background: white;
-                padding: 20px;
-                border-radius: 12px;
-                width: 200px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            }}
-
-            .card h3 {{
-                margin-top: 0;
-                color: #555;
-            }}
-
-            .number {{
-                font-size: 32px;
-                font-weight: bold;
-                color: #146ee8;
-            }}
-
-            .section {{
-                background: white;
-                padding: 20px;
-                margin-top: 20px;
-                border-radius: 12px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-                overflow-x: auto;
-            }}
-
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-            }}
-
-            th, td {{
-                padding: 10px;
-                border-bottom: 1px solid #ddd;
-                text-align: left;
-            }}
-
-            th {{
-                background: #eef3f9;
-            }}
-        </style>
-    </head>
-
-    <body>
-
-        <h1>Telemetry & Threat Analysis Dashboard</h1>
-
-        <div class="cards">
-
-            <div class="card">
-                <h3>Total Requests</h3>
-                <div class="number">{total_requests}</div>
-            </div>
-
-            <div class="card">
-                <h3>Unique IPs</h3>
-                <div class="number">{len(ips)}</div>
-            </div>
-
-            <div class="card">
-                <h3>Suspicious Requests</h3>
-                <div class="number">{suspicious_requests}</div>
-            </div>
-
-            <div class="card">
-                <h3>Normal Requests</h3>
-                <div class="number">{normal_requests}</div>
-            </div>
-
-        </div>
-
-        <div class="section">
-            <h2>Top Requested Routes</h2>
-
-            <table>
-                <tr>
-                    <th>Route</th>
-                    <th>Requests</th>
-                </tr>
-
-                {route_rows}
-            </table>
-        </div>
-
-        <div class="section">
-            <h2>Request Classifications</h2>
-
-            <table>
-                <tr>
-                    <th>Classification</th>
-                    <th>Count</th>
-                </tr>
-
-                {classification_rows}
-            </table>
-        </div>
-
-        <div class="section">
-            <h2>Recent Requests</h2>
-
-            <table>
-                <tr>
-                    <th>Time</th>
-                    <th>IP Address</th>
-                    <th>Method</th>
-                    <th>Path</th>
-                    <th>Classification</th>
-                </tr>
-
-                {recent_rows}
-            </table>
-        </div>
-
-    </body>
-    </html>
-    """
-
-    return html
-
-
-if __name__ == "__main__":
-    app.run(debug=False)
+    await log_event(ev)
+    return build_response(request.url.path, request.method)

@@ -2,12 +2,16 @@ services:
   - type: web
     name: telemetrytreathanlysis
     runtime: python
-    plan: free
+    plan: free            # use "starter" if you want no spin-down + a persistent disk
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
-    healthCheckPath: /health
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --no-server-header
+    healthCheckPath: /healthz
     envVars:
-      # Set the value in the Render dashboard (Environment tab). Never commit it.
-      # For Supabase, use the Session pooler connection string, not the direct one.
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: EXPORT_TOKEN
+        generateValue: true     # secret path segment for downloading logs
       - key: DATABASE_URL
-        sync: false
+        sync: false              # paste your Supabase connection string manually in the Render dashboard
+      - key: MY_IPS
+        value: ""               # comma-separated IPs of your own test machines
