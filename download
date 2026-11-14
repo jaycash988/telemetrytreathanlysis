@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.env
-data/
-geo_cache.json
-charts/
-events_enriched.csv
-report_data.md
-*.zip
