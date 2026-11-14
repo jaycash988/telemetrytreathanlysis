@@ -162,7 +162,7 @@ def build_response(path: str, method: str) -> Response:
     return HTMLResponse(NOT_FOUND, status_code=404, headers=hdr)
 
 # ------------------------------------------------------------------- routes
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])   # UptimeRobot sends HEAD as well as GET
 async def healthz():           # Render health check + uptime pinger; NOT logged
     return PlainTextResponse("ok")
 
