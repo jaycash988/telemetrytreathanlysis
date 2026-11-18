@@ -1,0 +1,354 @@
+<!doctype html><html><head><meta charset='utf-8'><title>Honeypot Report</title><style>body{font-family:'Helvetica Neue',Arial,sans-serif;font-size:10.5pt;line-height:1.5;color:#1b1b1a;max-width:none;margin:0}
+h1{font-size:20pt;margin:0 0 6pt}h2{font-size:14pt;margin:18pt 0 6pt;border-bottom:1px solid #ddd;padding-bottom:3pt;page-break-after:avoid}
+table{border-collapse:collapse;width:100%;margin:6pt 0 10pt;font-size:9pt;page-break-inside:avoid}th,td{border:1px solid #d6d5d0;padding:4pt 6pt;text-align:left;vertical-align:top}th{background:#f1f0ec}
+code{font-family:Menlo,Consolas,monospace;font-size:8.8pt;background:#f3f2ee;padding:0 2pt}pre{background:#f3f2ee;padding:8pt;font-size:8.3pt;overflow:hidden;page-break-inside:avoid}pre code{background:none}
+img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockquote{border-left:3px solid #eda100;margin:0;padding:2pt 10pt;background:#fdf6e6}</style></head><body><h1>Telemetry and Threat Analysis: A Low-Interaction Web Honeypot on Render</h1>
+<blockquote>
+<p><strong>Draft.</strong> Items marked <strong>[TODO]</strong> need your input: screenshots, and confirmation of which IPs were your own test machines.</p>
+</blockquote>
+<h2>1. Introduction and objectives</h2>
+<p>The project deployed a low-interaction web honeypot to the public Internet to observe what automated clients do when they find a newly published web server. The objectives were to:</p>
+<ol>
+<li>Build a service that looks like a carelessly configured web server: an exposed <code>.env</code> file, an exposed <code>.git</code> directory, WordPress and phpMyAdmin login pages, and admin portals.</li>
+<li>Record every request with enough detail to tell real clients apart from forged headers, recovering the true client IP from behind the hosting provider's reverse-proxy chain.</li>
+<li>Store the telemetry outside the hosting container (in Supabase Postgres), so redeploys and restarts do not lose data.</li>
+<li>Classify the observed activity and map it to MITRE ATT&amp;CK techniques.</li>
+</ol>
+<h2>2. Architecture</h2>
+<p><img alt="Architecture and data flow" src="charts/fig_architecture.png" /></p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Honeypot</td>
+<td>FastAPI 0.115 + uvicorn</td>
+<td><code>docs</code>, <code>redoc</code> and <code>openapi</code> routes disabled to hide FastAPI fingerprints; <code>--no-server-header</code>, with fake <code>Server: Apache/2.4.41 (Ubuntu)</code> and <code>X-Powered-By: PHP/7.4.3</code> headers</td>
+</tr>
+<tr>
+<td>Hosting</td>
+<td>Render web service (free plan)</td>
+<td>Public URL <code>https://telemetrytreathanlysis-tj0r.onrender.com</code> (an earlier instance ran at <code>https://telemetrytreathanlysis.onrender.com</code>)</td>
+</tr>
+<tr>
+<td>Storage</td>
+<td>Supabase Postgres 17</td>
+<td><code>events</code> table (see <code>schema.sql</code>); the app connects as a dedicated least-privilege role allowed only <code>SELECT</code>/<code>INSERT</code> on <code>events</code></td>
+</tr>
+<tr>
+<td>Keep-alive</td>
+<td>UptimeRobot, 5-minute interval</td>
+<td>Hits <code>/healthz</code>, which is deliberately <strong>not</strong> logged so it does not pollute the data</td>
+</tr>
+</tbody>
+</table>
+<h2>3. Deception design</h2>
+<table>
+<thead>
+<tr>
+<th>Lure endpoint(s)</th>
+<th>Imitates</th>
+<th>Response returned</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>*/.env*</code></td>
+<td>Laravel/Node environment file left in the web root</td>
+<td>Fake <code>APP_KEY</code>, DB password and AWS key pair (all fabricated, non-functional)</td>
+</tr>
+<tr>
+<td><code>/.git/config</code>, <code>/.git/HEAD</code></td>
+<td>Exposed Git repository</td>
+<td>Plausible <code>config</code> pointing at a fictitious <code>acme-corp/internal-portal</code> repo</td>
+</tr>
+<tr>
+<td><code>/wp-login.php</code>, <code>/wp-admin*</code></td>
+<td>WordPress login</td>
+<td>Login form; any POST returns "Invalid username or password" and the submitted credentials are captured</td>
+</tr>
+<tr>
+<td><code>*phpmyadmin*</code>, <code>*pma*</code>, <code>*adminer*</code></td>
+<td>phpMyAdmin / Adminer</td>
+<td>Login form; POST returns "Cannot log in to the MySQL server"</td>
+</tr>
+<tr>
+<td><code>/admin</code>, <code>/administrator</code>, <code>/login</code>, <code>/manager</code>, <code>/console</code>, <code>/cpanel</code>, <code>/boaform</code>, <code>/signin</code>, <code>/user/login</code></td>
+<td>Generic admin panels and router UIs</td>
+<td>"Administration Portal" login form</td>
+</tr>
+<tr>
+<td><code>*actuator*</code></td>
+<td>Spring Boot Actuator <code>/env</code></td>
+<td>JSON listing active profile <code>prod</code> and a masked DB password</td>
+</tr>
+<tr>
+<td><code>*server-status*</code></td>
+<td>Apache <code>mod_status</code></td>
+<td>Fake uptime/access counters</td>
+</tr>
+<tr>
+<td><code>*.sql</code>, <code>*backup*</code>, <code>*.bak</code>, <code>*.zip</code>, <code>*.tar.gz</code></td>
+<td>Database dumps and backups</td>
+<td>Truncated fake MySQL dump header</td>
+</tr>
+<tr>
+<td><code>/config.json</code>, <code>/config.php</code>, <code>/config.yml</code>, <code>/wp-config.php.bak</code></td>
+<td>Leaked application config</td>
+<td>JSON with fake DB credentials</td>
+</tr>
+<tr>
+<td><code>/robots.txt</code></td>
+<td>robots.txt</td>
+<td>Disallows <code>/admin/</code>, <code>/backup/</code>, <code>/.git/</code>, <code>/phpmyadmin/</code>, <code>/internal/</code> to invite follow-up crawling</td>
+</tr>
+<tr>
+<td>anything else</td>
+<td>Apache default</td>
+<td>Apache-styled <code>404 Not Found</code> page</td>
+</tr>
+</tbody>
+</table>
+<p>Safety: nothing in the application executes, evaluates or forwards attacker input. Request bodies are truncated to 4 KB, and all secrets served are fabricated.</p>
+<h2>4. Reverse-proxy telemetry (real client IP)</h2>
+<p>Behind Render, the TCP peer the app sees is a proxy, not the client. <code>client_ip()</code> in <code>app.py</code> therefore trusts sources in this order:</p>
+<ol>
+<li><code>CF-Connecting-IP</code> / <code>True-Client-IP</code>, set by Cloudflare, which fronts every <code>*.onrender.com</code> host.</li>
+<li>The first <em>public</em> (globally routable) address in <code>X-Forwarded-For</code>.</li>
+<li>The socket peer, as a last resort.</li>
+</ol>
+<p>The raw <code>X-Forwarded-For</code> value is always stored alongside, because a client can pre-fill that header to spoof an address.</p>
+<p><strong>Verification.</strong> A test request was made from a known machine and compared with the stored row. Example row (event <code>081ae5d54835</code>, 12 Nov 2026 14:32:15 UTC, <code>GET /.env</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ip</code> (resolved)</td>
+<td><code>41.217.22.x</code></td>
+</tr>
+<tr>
+<td><code>xff</code> (raw)</td>
+<td><code>41.217.22.x, 104.22.76.130, 10.31.219.77</code></td>
+</tr>
+<tr>
+<td>Headers present</td>
+<td><code>cf-connecting-ip</code>, <code>true-client-ip</code>, <code>cf-ipcountry</code>, <code>x-forwarded-for</code>, <code>rndr-id</code></td>
+</tr>
+</tbody>
+</table>
+<p>The chain reads <strong>client → Cloudflare edge (104.22.x.x) → Render internal (10.x.x.x)</strong>, and the app correctly resolved the left-most public address. <strong>[TODO: confirm this matches the IP shown at https://ifconfig.me on your machine at the time, and add a screenshot of the Supabase row.]</strong></p>
+<p>Events with <code>ip = 127.0.0.1</code> come from Render's own in-container health probes (<code>HEAD /</code> with <code>Go-http-client/1.1</code>). This matches the design: no forwarding headers, peer equals loopback.</p>
+<h2>5. Deployment</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Repository</td>
+<td><code>jaycash988/telemetrytreathanlysis</code> (GitHub)</td>
+</tr>
+<tr>
+<td>Platform</td>
+<td>Render web service, Python runtime, free plan, region Frankfurt</td>
+</tr>
+<tr>
+<td>Build / start</td>
+<td><code>pip install -r requirements.txt</code> / <code>uvicorn app:app --host 0.0.0.0 --port $PORT --no-server-header</code></td>
+</tr>
+<tr>
+<td>Health check</td>
+<td><code>/healthz</code> (unlogged)</td>
+</tr>
+<tr>
+<td>Environment variables</td>
+<td><code>DATABASE_URL</code> (Supabase Session pooler URI), <code>EXPORT_TOKEN</code> (secret path for <code>/_export/&lt;token&gt;</code>), <code>MY_IPS</code> (own test IPs; left empty), <code>PYTHON_VERSION=3.11.9</code></td>
+</tr>
+<tr>
+<td>Database</td>
+<td>Supabase project <code>telemetrytreathanalysis</code>, region eu-west-1, Postgres 17</td>
+</tr>
+</tbody>
+</table>
+<p><strong>[TODO screenshots: Render build log, Render service page with URL, Supabase <code>events</code> table, Render logs showing <code>HP {...}</code> lines.]</strong></p>
+<h2>6. Observation window</h2>
+<table>
+<thead>
+<tr>
+<th>Period (UTC)</th>
+<th>Instance</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>12 Nov 14:12 → 14 Nov 12:41</td>
+<td><code>telemetrytreathanlysis.onrender.com</code></td>
+<td>Logging to Supabase (last stored event 14 Nov 12:41)</td>
+</tr>
+<tr>
+<td>14 Nov 12:41 → 18 Nov 12:13</td>
+<td>—</td>
+<td><strong>No events stored.</strong> The original instance stopped writing to the database, and its replacement (created 16 Nov) failed to start until its <code>DATABASE_URL</code> was configured</td>
+</tr>
+<tr>
+<td>18 Nov 12:13 → end of study</td>
+<td><code>telemetrytreathanlysis-tj0r.onrender.com</code></td>
+<td>Logging to Supabase</td>
+</tr>
+</tbody>
+</table>
+<p>Total span covered: about 142 hours. The effective logging time was shorter, because of the gap above.</p>
+<h2>7. Results</h2>
+<p>All figures exclude the 9 internal Render health probes from <code>127.0.0.1</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total requests logged</td>
+<td>32</td>
+</tr>
+<tr>
+<td>Unique source IPs</td>
+<td>10</td>
+</tr>
+<tr>
+<td>Credential submissions</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Exploit payloads (SQLi, LFI, Log4Shell, command injection)</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Requests with tool/scanner user-agent</td>
+<td>18 (axios, Go-http-client)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Source breakdown.</strong> The traffic falls into three groups:</p>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>IPs</th>
+<th>Requests</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Researcher verification tests</td>
+<td>3 (<code>41.217.22.x</code>, <code>41.217.4.x</code>, <code>154.118.104.x</code>)</td>
+<td>14</td>
+<td>Desktop Chrome/Edge browsers; referers show manual visits to <code>/</code>, <code>/.env</code> and <code>/healthz</code>. <strong>[TODO: confirm these were you]</strong></td>
+</tr>
+<tr>
+<td>Hosting-platform checks (inferred)</td>
+<td>6 Google Cloud addresses (<code>34.x</code>, <code>35.x</code>)</td>
+<td>7</td>
+<td><code>GET /</code> with <code>Go-http-client/2.0</code>, each arriving 1–9 seconds after a new instance started up; consistent with an automated post-deploy reachability check</td>
+</tr>
+<tr>
+<td><strong>Third-party automated scanner</strong></td>
+<td>1 (<code>18.197.27.216</code>, AWS eu-central-1 range)</td>
+<td>11</td>
+<td>See below</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The third-party scanner.</strong> On 12 Nov at 20:56:59–20:57:00 UTC, about 6.7 hours after the first deploy, <code>18.197.27.216</code> sent 11 <code>GET</code> requests in about one second with user-agent <code>axios/1.18.1</code>:</p>
+<p><code>/</code>, <code>/login</code>, <code>/register</code>, <code>/cart</code>, <code>/order</code>, <code>/pricing</code>, <code>/contact</code>, <code>/blog</code>, <code>/search</code>, <code>/admin</code>, <code>/wp-admin</code></p>
+<p>The requests carried <code>sentry-trace</code> and <code>baggage</code> headers, which are distributed-tracing headers emitted by a Node.js service instrumented with Sentry. This indicates an automated SaaS crawler or site-fingerprinting service rather than a human. The path list mixes generic e-commerce pages with the two most common admin panels (<code>/admin</code>, <code>/wp-admin</code>), the signature of a lightweight technology/attack-surface profiler. It did not request any of the high-value lures (<code>.env</code>, <code>.git/config</code>, backups) and submitted no credentials.</p>
+<p><strong>Figures:</strong></p>
+<p><img alt="Telemetry dashboard" src="charts/fig_dashboard.png" /></p>
+<p><img alt="Who sent the logged requests" src="charts/fig_sources.png" /></p>
+<p><img alt="Requests over the observation window" src="charts/fig_timeline.png" /></p>
+<p><img alt="Scanner requests by MITRE technique" src="charts/fig_scanner_paths.png" /></p>
+<p>Charts produced by <code>analyze.py</code> across all external traffic (<code>results/charts/mitre.png</code>, <code>paths.png</code>, <code>timeline.png</code>) can go in the appendix.</p>
+<p>Geolocation was not available when the charts were generated (ip-api.com unreachable from the analysis environment). Re-running <code>python analyze.py --exclude 127.0.0.1</code> on a normal Internet connection fills in the country column and <code>charts/countries.png</code>.</p>
+<h2>8. MITRE ATT&amp;CK mapping</h2>
+<table>
+<thead>
+<tr>
+<th>Observed behaviour</th>
+<th>Technique</th>
+<th>Events</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Enumeration of common site paths (<code>/login</code>, <code>/register</code>, <code>/cart</code>, <code>/blog</code>, …)</td>
+<td>T1595.003 Active Scanning: Wordlist Scanning</td>
+<td>7</td>
+<td>Scanner</td>
+</tr>
+<tr>
+<td>Probing admin portals (<code>/admin</code>, <code>/wp-admin</code>)</td>
+<td>T1595.002 Active Scanning: Vulnerability Scanning</td>
+<td>2</td>
+<td>Scanner</td>
+</tr>
+<tr>
+<td>Fetching <code>/</code>, <code>/favicon.ico</code> to fingerprint the host</td>
+<td>T1592 Gather Victim Host Information</td>
+<td>21</td>
+<td>Mixed (mostly researcher tests and platform checks)</td>
+</tr>
+<tr>
+<td>Request for <code>/.env</code></td>
+<td>T1552.001 Unsecured Credentials: Credentials In Files</td>
+<td>1</td>
+<td>Researcher test</td>
+</tr>
+</tbody>
+</table>
+<p>Lures that were never triggered by third parties: credential brute force (T1110), web-shell probing (T1505.003), IoT/router exploitation (T1190), backup hunting.</p>
+<h2>9. Discussion</h2>
+<p>The main finding is how <strong>little</strong> unsolicited traffic a honeypot on a Platform-as-a-Service subdomain receives. Studies of honeypots on bare cloud IPs typically record thousands of requests per day. This one received one genuine third-party scanner in about six days. Three properties of the hosting set-up explain the difference:</p>
+<ol>
+<li><strong>No Certificate Transparency trail.</strong> Most hostname-aware scanners discover new sites by watching CT logs for newly issued certificates. Render serves <code>*.onrender.com</code> with a wildcard certificate, so creating this service never published its hostname to CT logs.</li>
+<li><strong>No dedicated IP.</strong> Mass scanners such as Mirai variants, masscan and zgrab sweeps target IP addresses. Here the IP belongs to Cloudflare's shared edge, and a request without the correct <code>Host</code> header never reaches the service. IP-sweeping botnets, which generate most honeypot traffic, are therefore invisible.</li>
+<li><strong>Free-tier constraints.</strong> Render's free plan sleeps after 15 minutes idle, and the study lost about four days of logging during a service migration.</li>
+</ol>
+<p>The one scanner that did arrive behaved like a commercial attack-surface or technology-profiling service. It was quick, broad and shallow, did not follow <code>robots.txt</code> hints, and had no interest in credentials. This is consistent with the reconnaissance stage of ATT&amp;CK (TA0043) rather than initial access.</p>
+<p>The reverse-proxy work (section 4) is a positive result: the three-hop chain was correctly unwound, and the design stores the raw header so spoofing can be detected after the fact.</p>
+<h2>10. Limitations and ethics</h2>
+<p><strong>Limitations</strong></p>
+<ul>
+<li>Small sample (one third-party source); results describe this deployment and cannot be generalised to Internet-wide threat levels.</li>
+<li>Logging gap from 14 to 18 Nov.</li>
+<li>The country of origin was not resolved in this draft.</li>
+<li>The classification of the Google Cloud requests as platform checks is inferred from timing, not confirmed by Render.</li>
+</ul>
+<p><strong>Ethics</strong></p>
+<ul>
+<li>Passive, low-interaction design: no attacker input is executed, and nothing is attacked back.</li>
+<li>All "leaked" secrets are fabricated and grant no access to anything.</li>
+<li>Collected IP addresses are personal data under GDPR. They are stored in a private database with row-level security, the researcher's own IPs are masked in this report, and the data will be deleted after assessment.</li>
+<li>Hosted within Render's acceptable-use policy; it serves only static decoy content.</li>
+</ul>
+<h2>11. Appendix</h2>
+<ul>
+<li>Source code: <code>app.py</code>, <code>analyze.py</code>, <code>schema.sql</code>, <code>render.yaml</code> in this repository.</li>
+<li><strong>[TODO screenshots: code in editor, local curl test, GitHub repo, Render build log, Render service page, Supabase table, Render live logs, analyze.py output, charts.]</strong></li>
+</ul></body></html>
