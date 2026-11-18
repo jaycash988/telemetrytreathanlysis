@@ -133,6 +133,8 @@ The requests carried `sentry-trace` and `baggage` headers, which are distributed
 
 **Figures:**
 
+![Telemetry dashboard](results/charts/fig_dashboard.png)
+
 ![Who sent the logged requests](results/charts/fig_sources.png)
 
 ![Requests over the observation window](results/charts/fig_timeline.png)
