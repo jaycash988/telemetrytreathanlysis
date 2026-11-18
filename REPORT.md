@@ -15,26 +15,6 @@ The project deployed a low-interaction web honeypot to the public Internet to ob
 
 ![Architecture and data flow](results/charts/fig_architecture.png)
 
-```
-Internet client
-   │  HTTPS
-   ▼
-Cloudflare edge (fronts *.onrender.com)  ── adds CF-Connecting-IP, appends to X-Forwarded-For
-   │
-   ▼
-Render load balancer (internal 10.x.x.x)  ── appends to X-Forwarded-For
-   │
-   ▼
-FastAPI app (app.py, uvicorn, Python 3.11, Render free plan, Frankfurt)
-   │  ├── prints each event to stdout as "HP {...}"  → Render log stream (backup copy)
-   │  └── INSERT into Postgres via Supabase Session pooler (port 5432)
-   ▼
-Supabase Postgres, table `events` (eu-west-1), RLS enabled
-   │
-   ▼
-analyze.py  → report tables, MITRE mapping, charts
-```
-
 | Component | Technology | Notes |
 |---|---|---|
 | Honeypot | FastAPI 0.115 + uvicorn | `docs`, `redoc` and `openapi` routes disabled to hide FastAPI fingerprints; `--no-server-header`, with fake `Server: Apache/2.4.41 (Ubuntu)` and `X-Powered-By: PHP/7.4.3` headers |
@@ -171,12 +151,14 @@ The reverse-proxy work (section 4) is a positive result: the three-hop chain was
 ## 10. Limitations and ethics
 
 **Limitations**
+
 - Small sample (one third-party source); results describe this deployment and cannot be generalised to Internet-wide threat levels.
 - Logging gap from 14 to 18 Nov.
 - The country of origin was not resolved in this draft.
 - The classification of the Google Cloud requests as platform checks is inferred from timing, not confirmed by Render.
 
 **Ethics**
+
 - Passive, low-interaction design: no attacker input is executed, and nothing is attacked back.
 - All "leaked" secrets are fabricated and grant no access to anything.
 - Collected IP addresses are personal data under GDPR. They are stored in a private database with row-level security, the researcher's own IPs are masked in this report, and the data will be deleted after assessment.
