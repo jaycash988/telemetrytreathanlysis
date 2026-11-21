@@ -21,6 +21,15 @@ create table if not exists ips (
     ip text primary key, first_seen text, last_seen text,
     hits integer default 0, score integer default 0, country text, blocked integer default 0
 );
+create table if not exists game_runs (
+    run_id text primary key, ts text, ids text, used integer default 0
+);
+create table if not exists scores (
+    id text primary key, ts text, name text, score integer, correct integer, total integer
+);
+create table if not exists game_answers (
+    run_id text, event_id text, choice text, correct integer, ts text
+);
 create index if not exists events_ts_idx on events (ts);
 create index if not exists events_ip_idx on events (ip);
 """

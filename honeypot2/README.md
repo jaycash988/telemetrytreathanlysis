@@ -1,10 +1,22 @@
 # Honeypot v2 + Dashboard
 
-Two small services that share one database:
+Three small services that share one database:
 
 ```
 Internet -> Cloudflare/Render -> honeypot (honeypot/app.py) --writes--> Supabase Postgres <--reads-- dashboard (dashboard/app.py) <- you
+                                                                              ^
+                                              game (game/app.py) --reads real attacks, writes scores--+  <- players
 ```
+
+## The game: Threat Hunter (`game/`)
+A public, mobile-friendly browser game fed by the live honeypot. Real captured requests fall down the screen and the
+player sorts each into Recon / Credentials / Injection / Exploit / Canary before it lands. Combos, 3 lives,
+leaderboard. Grading happens **server-side** against the honeypot's own classification (`POST /api/answer`), so scores
+can't be forged; replays, double-saves and rapid-fire bots are rejected. IPs are masked and passwords/canary secrets
+are redacted before cards leave the server. Until the honeypot has captured enough traffic, built-in sample attacks
+fill each round. Players' answers are stored in `game_answers`, so you also get crowd-labelled data to compare against
+the detector. Run: `uvicorn game.app:app --port 8002`.
+Note: live run state is kept in memory (single instance); a restart only drops games in progress.
 
 ## What's new vs. v1
 | Feature | Where |
@@ -30,8 +42,8 @@ All keys, passwords and data served are fake. Nothing executes attacker input.
 ## Deploy (Render + Supabase)
 1. Use the **same Supabase project** as v1 or a new one. Tables are created automatically on first start
    (`common/db.py`); no manual SQL needed. Use the **Session pooler** connection string.
-2. Render -> New -> Blueprint -> pick this repo, set **Root Directory** to `honeypot2`. It creates `hp2-honeypot`
-   and `hp2-dashboard`. Set `DATABASE_URL` (same value on both). Render generates `DASH_TOKEN` - copy it from
+2. Render -> New -> Blueprint -> pick this repo, set **Root Directory** to `honeypot2`. It creates `hp2-honeypot`,
+   `hp2-dashboard` and `hp2-game`. Set `DATABASE_URL` (same value on both). Render generates `DASH_TOKEN` - copy it from
    the dashboard service's Environment tab; that is the dashboard password.
 3. Optional: `MY_IPS` (your IPs, excluded from scoring), `ALERT_WEBHOOK_URL` (Discord/Slack).
 4. Keep the honeypot awake with an UptimeRobot ping on `/healthz` (not logged).

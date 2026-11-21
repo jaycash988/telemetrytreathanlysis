@@ -1,4 +1,4 @@
-# Two services, one shared Supabase database.
+# Three services, one shared Supabase database.
 services:
   - type: web
     name: hp2-honeypot
@@ -25,3 +25,13 @@ services:
       - {key: PYTHON_VERSION, value: 3.11.9}
       - {key: DATABASE_URL, sync: false}        # SAME value as the honeypot
       - {key: DASH_TOKEN, generateValue: true}  # password for the dashboard
+  - type: web
+    name: hp2-game
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn game.app:app --host 0.0.0.0 --port $PORT --no-server-header
+    healthCheckPath: /healthz
+    envVars:
+      - {key: PYTHON_VERSION, value: 3.11.9}
+      - {key: DATABASE_URL, sync: false}        # SAME value as the honeypot
