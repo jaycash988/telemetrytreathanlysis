@@ -1,0 +1,27 @@
+# Two services, one shared Supabase database.
+services:
+  - type: web
+    name: hp2-honeypot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn honeypot.app:app --host 0.0.0.0 --port $PORT --no-server-header
+    healthCheckPath: /healthz
+    envVars:
+      - {key: PYTHON_VERSION, value: 3.11.9}
+      - {key: DATABASE_URL, sync: false}        # Supabase session-pooler string
+      - {key: MY_IPS, value: ""}                # your own IPs, comma-separated
+      - {key: ALERT_WEBHOOK_URL, sync: false}   # optional Discord/Slack webhook
+      - {key: ALERT_MIN, value: "8"}
+      - {key: TARPIT_SCORE, value: "60"}
+  - type: web
+    name: hp2-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn dashboard.app:app --host 0.0.0.0 --port $PORT --no-server-header
+    healthCheckPath: /healthz
+    envVars:
+      - {key: PYTHON_VERSION, value: 3.11.9}
+      - {key: DATABASE_URL, sync: false}        # SAME value as the honeypot
+      - {key: DASH_TOKEN, generateValue: true}  # password for the dashboard
