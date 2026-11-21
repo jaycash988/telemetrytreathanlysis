@@ -37,7 +37,14 @@ create index if not exists events_ip_idx on events (ip);
 if PG:
     from psycopg_pool import ConnectionPool
     from psycopg.rows import dict_row
-    _pool = ConnectionPool(URL, min_size=1, max_size=5, open=True,
+    SCHEMA_NAME = os.getenv("DB_SCHEMA", "hp2")   # own schema: never collides with other projects' tables (e.g. v1 'events')
+
+    def _configure(conn):
+        conn.execute(f"create schema if not exists {SCHEMA_NAME}")
+        conn.execute(f"set search_path to {SCHEMA_NAME}")
+        conn.commit()
+
+    _pool = ConnectionPool(URL, min_size=1, max_size=5, open=True, configure=_configure,
                            kwargs={"prepare_threshold": None, "connect_timeout": 5, "row_factory": dict_row})
 else:
     _lock = threading.Lock()
@@ -48,7 +55,7 @@ else:
 def _run(sql, params, fetch):
     if PG:
         with _pool.connection(timeout=5) as c:
-            cur = c.execute(sql.replace("?", "%s"), params)
+            cur = c.execute(sql.replace("%", "%%").replace("?", "%s"), params)   # literal % (LIKE) must be escaped for psycopg
             return cur.fetchall() if fetch else None
     with _lock:
         cur = _conn.execute(sql, params)
