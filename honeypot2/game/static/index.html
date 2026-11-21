@@ -2,6 +2,8 @@
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Threat Hunter</title>
+<meta name="description" content="Hunt real attackers captured by a live honeypot.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🍯%3C/text%3E%3C/svg%3E">
 <style>
 :root{color-scheme:dark}
 :root{--bg:#0b1020;--panel:#141b30;--line:#26314f;--fg:#e8eefc;--mut:#8a97b8;--ok:#34d399;--bad:#f87171;--gold:#fbbf24;
@@ -37,16 +39,25 @@ dl{margin:10px 0;display:grid;grid-template-columns:auto 1fr;gap:6px 10px;font-s
 input{width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font-size:16px}
 ol{padding-left:20px;margin:8px 0}li{margin:3px 0}li span{color:var(--mut)}
 .tag{font-size:11px;color:var(--mut)}
+.brand{display:flex;align-items:center;gap:12px}.brand h1{margin:0}.brand p{margin:0;font-size:13px}
+.tabs{display:flex;gap:6px;margin:14px 0 6px}.tabs button{flex:1;padding:7px;border-radius:8px;border:1px solid var(--line);background:none;color:var(--mut);cursor:pointer}
+.tabs button.on{background:var(--line);color:var(--fg);font-weight:700}
+#mute{position:absolute;top:6px;right:8px;z-index:2;background:none;border:0;font-size:18px;cursor:pointer;opacity:.8}
+#banner{position:absolute;left:0;right:0;top:62%;text-align:center;font-size:22px;font-weight:900;color:var(--bad);letter-spacing:.08em;text-shadow:0 0 18px var(--bad);pointer-events:none;opacity:0;transition:opacity .25s;z-index:3}
+#banner.on{opacity:1}
+.card.boss{border-color:var(--bad);animation:pulse .7s infinite alternate}
+@keyframes pulse{to{box-shadow:0 0 26px #f8717199}}
 #wrap{position:relative;flex:1;display:flex;flex-direction:column;min-height:0}
 </style></head><body>
 <div id="app"><div id="wrap">
  <div class="hud"><div><small>Score</small><span id="score">0</span></div><div style="text-align:center"><small>Combo</small><span id="combo">x0</span></div><div style="text-align:right"><small>Lives</small><span id="lives">♥♥♥</span></div></div>
- <div id="field"><div id="toast"></div></div>
+ <div id="field"><button id="mute" title="Sound on/off" aria-label="Toggle sound">🔊</button><div id="banner"></div><div id="toast"></div></div>
  <div id="btns"></div>
 
  <div class="screen" id="intro"><div class="box">
-  <h1>🍯 Threat Hunter</h1>
-  <p>These are <b>real requests captured by a live honeypot</b>. Sort each attack before it hits the red line. Wrong or too slow costs a life.</p>
+  <div class="brand"><svg viewBox="0 0 64 64" width="56" height="56" aria-hidden="true"><circle cx="32" cy="32" r="26" fill="none" stroke="#8b5cf6" stroke-width="3"/><path d="M32 2v14M32 48v14M2 32h14M48 32h14" stroke="#6366f1" stroke-width="3" stroke-linecap="round"/><text x="32" y="42" font-size="26" text-anchor="middle">🍯</text></svg>
+  <div><h1>Threat Hunter</h1><p>Hunt real attackers. Learn how they think.</p></div></div>
+  <p style="margin-top:12px">These are <b>real requests captured by a live honeypot</b>. Sort each attack before it hits the red line. Wrong or too slow costs a life.</p>
   <dl>
    <dt style="color:var(--recon)">1 Recon</dt><dd>Scanners poking around: /wp-login, /phpmyadmin, nmap, nikto…</dd>
    <dt style="color:var(--creds)">2 Credentials</dt><dd>Login attempts, or hunting for .env / .git secrets</dd>
@@ -54,16 +65,17 @@ ol{padding-left:20px;margin:8px 0}li{margin:3px 0}li span{color:var(--mut)}
    <dt style="color:var(--exploit)">4 Exploit</dt><dd>Log4Shell, command execution, webshells, RCE</dd>
    <dt style="color:var(--canary)">5 Canary 🔑</dt><dd>A request carrying a secret our honeypot handed out earlier. Bonus points!</dd>
   </dl>
-  <p class="tag">Keys 1-5 or tap. IPs are masked and passwords redacted.</p>
+  <p class="tag">Keys 1-5 or tap. IPs are masked and passwords redacted. Survive to the <b style="color:var(--bad)">⚠ boss wave</b> for double points.</p>
+  <p class="tag">Ranks: Rookie → Analyst (600) → Threat Hunter (1200) → Elite Hunter (1800)</p>
   <button class="big" id="startBtn">Start hunting</button>
-  <h2 style="margin-top:16px;font-size:15px">Top hunters</h2><ol id="lb0"></ol>
+  <h2 style="margin-top:16px;font-size:15px">Top hunters</h2><div class="tabs"><button data-p="day">Today</button><button data-p="week">This week</button><button data-p="all" class="on">All-time</button></div><ol id="lb0"></ol>
  </div></div>
 
  <div class="screen" id="over" style="display:none"><div class="box">
   <h1 id="ovTitle">Game over</h1><p id="ovStats"></p>
   <input id="name" maxlength="16" placeholder="Your name for the leaderboard" autocomplete="nickname">
   <button class="big" id="saveBtn">Save score</button>
-  <ol id="lb1"></ol><button class="big" id="againBtn" style="background:var(--line)">Play again</button>
+  <div class="tabs"><button data-p="day">Today</button><button data-p="week">This week</button><button data-p="all" class="on">All-time</button></div><ol id="lb1"></ol><button class="big" id="againBtn" style="background:var(--line)">Play again</button>
  </div></div>
 </div></div>
 <script>
@@ -72,15 +84,24 @@ const CH=[['recon','Recon'],['creds','Creds'],['injection','Inject'],['exploit',
 const ICON={recon:'🔍',creds:'🔐',injection:'💉',exploit:'💥',canary:'🔑'};
 $('btns').innerHTML=CH.map(([c,l],i)=>`<button data-c="${c}"><b>${i+1}</b>${ICON[c]} ${l}</button>`).join('');
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let AC=null,muted=false;try{muted=localStorage.getItem('mute')==='1'}catch(e){}
+function snd(f,d=.12,type='sine',v=.08,delay=0){if(muted||!AC)return;const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+delay;o.type=type;o.frequency.value=f;o.connect(g);g.connect(AC.destination);g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);o.start(t);o.stop(t+d)}
+const SFX={ok:c=>{snd(520+Math.min(c,10)*40,.1);snd(780+Math.min(c,10)*40,.12,'sine',.08,.07)},bad:()=>snd(150,.3,'sawtooth',.09),
+ boss:()=>[0,.18,.36].forEach((d,i)=>snd(i%2?440:330,.16,'square',.05,d)),over:()=>[400,320,240,160].forEach((f,i)=>snd(f,.2,'triangle',.08,i*.15)),
+ win:()=>[523,659,784,1047].forEach((f,i)=>snd(f,.2,'sine',.08,i*.12))};
+function setMute(m){muted=m;$('mute').textContent=m?'🔇':'🔊';try{localStorage.setItem('mute',m?'1':'0')}catch(e){}}
+$('mute').onclick=()=>setMute(!muted);setMute(muted);
+let period='all',bossShown=false;
 let run=null,queue=[],cur=null,raf=0,startT=0,dur=9000,busy=false,state={score:0,combo:0,lives:3,done:0},saved=false;
 
 async function jf(url,body){const r=await fetch(url,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:undefined);if(!r.ok)throw new Error(r.status);return r.json()}
-async function board(el){try{const rows=await jf('/api/leaderboard');$(el).innerHTML=rows.map(r=>`<li>${esc(r.name)} <span>— ${r.score}</span></li>`).join('')||'<li><span>No scores yet. Be the first!</span></li>'}catch(e){}}
+async function board(el){try{const rows=await jf('/api/leaderboard?period='+period);$(el).innerHTML=rows.map(r=>`<li>${esc(r.name)} <span>— ${r.score} · ${esc(r.title)}</span></li>`).join('')||'<li><span>No scores yet. Be the first!</span></li>'}catch(e){}}
 function hud(){$('score').textContent=state.score;$('combo').textContent='x'+state.combo;$('lives').textContent='♥'.repeat(Math.max(0,state.lives))+'♡'.repeat(Math.max(0,3-state.lives))}
 function toast(t,c){const e=$('toast');e.textContent=t;e.style.color=c;e.classList.add('on');setTimeout(()=>e.classList.remove('on'),550)}
 
 async function start(){
-  $('intro').style.display='none';$('over').style.display='none';saved=false;
+  $('intro').style.display='none';$('over').style.display='none';saved=false;bossShown=false;
+  if(!AC){try{AC=new(window.AudioContext||window.webkitAudioContext)()}catch(e){}}AC&&AC.resume&&AC.resume();
   const d=await jf('/api/start');run=d.run_id;queue=d.cards;state={score:0,combo:0,lives:d.lives,done:0};hud();
   $('field').querySelectorAll('.card').forEach(n=>n.remove());next();
 }
@@ -88,8 +109,9 @@ function next(){
   if(!queue.length){return end()}
   cur=queue.shift();busy=false;
   const el=document.createElement('div');el.className='card';
-  el.innerHTML=`<span class="m">${esc(cur.method)}</span><span class="p">${esc(cur.path)}</span>${cur.body?`<div class="u">body: ${esc(cur.body)}</div>`:''}<div class="u">${esc(cur.ua)} · ${esc(cur.ip)}</div>${cur.badge?`<div class="b">${esc(cur.badge)}</div>`:''}`;
-  $('field').appendChild(el);cur.el=el;startT=performance.now();dur=Math.max(3800,9000-state.done*260);
+  el.innerHTML=`<span class="m">${esc(cur.method)}</span><span class="p">${esc(cur.path)}</span>${cur.body?`<div class="u">body: ${esc(cur.body)}</div>`:''}<div class="u">${esc(cur.ua)} · ${esc(cur.ip)}</div>${cur.badge?`<div class="b">${esc(cur.badge)}</div>`:''}${cur.boss?'<div class="b" style="color:var(--bad)">⚠ BOSS WAVE · double points</div>':''}`;
+  if(cur.boss){el.classList.add('boss');if(!bossShown){bossShown=true;const bn=$('banner');bn.textContent='⚠ BOSS WAVE ⚠';bn.classList.add('on');setTimeout(()=>bn.classList.remove('on'),1500);SFX.boss()}}
+  $('field').appendChild(el);cur.el=el;startT=performance.now();dur=Math.max(3800,9000-state.done*260)*(cur.boss?0.75:1);
   cancelAnimationFrame(raf);raf=requestAnimationFrame(tick);
 }
 function tick(t){
@@ -104,7 +126,7 @@ async function answer(choice){
   try{
     const r=await jf('/api/answer',{run_id:run,id:c.id,choice});
     state.score=r.score;state.combo=r.combo;state.lives=r.lives;state.done++;hud();
-    c.el.classList.add(r.correct?'good':'bad');
+    c.el.classList.add(r.correct?'good':'bad');r.correct?SFX.ok(r.combo):SFX.bad();
     toast(r.correct?(r.combo>2?`✔ combo x${r.combo}!`:'✔ Correct'):`✘ It was ${r.truth?ICON[r.truth]+' '+r.truth:'unknown'}`,r.correct?'var(--ok)':'var(--bad)');
     setTimeout(()=>c.el.remove(),r.correct?250:900);
     if(r.over){cur=null;setTimeout(end,r.correct?350:1000)}else{setTimeout(next,r.correct?250:700)}
@@ -112,16 +134,17 @@ async function answer(choice){
 }
 function end(){
   cancelAnimationFrame(raf);cur=null;
-  $('ovTitle').textContent=state.lives>0?'Round cleared! 🎉':'Game over';
+  $('ovTitle').textContent=state.lives>0?'Round cleared! 🎉':'Game over';state.lives>0?SFX.win():SFX.over();
   $('ovStats').textContent=`Score ${state.score} · ${state.done} requests handled`;
   $('saveBtn').style.display='';$('name').style.display='';$('over').style.display='flex';board('lb1');
 }
 async function save(){
   if(saved)return;saved=true;
   try{const r=await jf('/api/finish',{run_id:run,name:$('name').value||'anon'});
-    $('ovStats').textContent=`Score ${r.score} · ${r.correct} correct · best combo x${r.best_combo} · rank #${r.rank}`;
+    $('ovStats').textContent=`Score ${r.score} · ${r.correct} correct · best combo x${r.best_combo} · rank #${r.rank} · 🏅 ${r.title}`;
     $('saveBtn').style.display='none';$('name').style.display='none';board('lb1')}catch(e){$('ovStats').textContent='Could not save score (already saved?)'}
 }
+document.querySelectorAll('.tabs button').forEach(b=>b.addEventListener('click',()=>{period=b.dataset.p;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x.dataset.p===period));board('lb0');board('lb1')}));
 document.querySelectorAll('#btns button').forEach(b=>b.addEventListener('click',()=>answer(b.dataset.c)));
 addEventListener('keydown',e=>{const i=parseInt(e.key);if(i>=1&&i<=5)answer(CH[i-1][0])});
 $('startBtn').onclick=start;$('againBtn').onclick=start;$('saveBtn').onclick=save;board('lb0');hud();

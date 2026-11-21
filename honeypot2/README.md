@@ -43,7 +43,7 @@ All keys, passwords and data served are fake. Nothing executes attacker input.
 1. Use the **same Supabase project** as v1 or a new one. Tables are created automatically on first start
    (`common/db.py`); no manual SQL needed. Use the **Session pooler** connection string.
 2. Render -> New -> Blueprint -> pick this repo, set **Root Directory** to `honeypot2`. It creates `hp2-honeypot`,
-   `hp2-dashboard` and `hp2-game`. Set `DATABASE_URL` (same value on both). Render generates `DASH_TOKEN` - copy it from
+   `hp2-dashboard` and `threat-hunter`. Set `DATABASE_URL` (same value on both). Render generates `DASH_TOKEN` - copy it from
    the dashboard service's Environment tab; that is the dashboard password.
 3. Optional: `MY_IPS` (your IPs, excluded from scoring), `ALERT_WEBHOOK_URL` (Discord/Slack).
 4. Keep the honeypot awake with an UptimeRobot ping on `/healthz` (not logged).

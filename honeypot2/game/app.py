@@ -7,7 +7,7 @@ client can't just post a fake score. IPs are masked and credentials are redacted
 If the honeypot hasn't captured enough traffic yet, built-in sample attacks fill the gaps.
 """
 import json, random, re, secrets, time, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -23,7 +23,12 @@ BUCKETS = ["recon", "creds", "injection", "exploit", "canary"]
 BUCKET = {"Reconnaissance": "recon", "Benign/unknown": "recon", "Credential attack": "creds",
           "Credential/secret hunting": "creds", "Injection": "injection", "Exploit attempt": "exploit",
           "Credential reuse (CANARY)": "canary"}
-LIVES, ROUND = 3, 20
+LIVES, ROUND, BOSS_MAX = 3, 20, 5
+RANKS = [(1800, "Elite Hunter"), (1200, "Threat Hunter"), (600, "Analyst"), (0, "Rookie")]
+
+
+def rank_title(score):
+    return next(t for lo, t in RANKS if score >= lo)
 RUNS = {}   # run_id -> live game state (single-process; a restart only drops games in progress)
 
 # (method, path, ua, answer) - used until the honeypot has captured enough real traffic
@@ -77,12 +82,13 @@ def pick_round(n):
         key = (r["path"][:40], b)
         if b and key not in seen:
             seen.add(key); by[b].append(r)
-    cards = []
+    cards, bk = [], {}
     pools = {b: random.sample(v, len(v)) for b, v in by.items()}
     while len(cards) < n and any(pools.values()):          # round-robin so every bucket shows up
         for b in BUCKETS:
             if pools[b] and len(cards) < n:
-                cards.append(card_from_event(pools[b].pop()))
+                c = card_from_event(pools[b].pop())
+                cards.append(c); bk[c["id"]] = b
     sample = random.sample(range(len(SAMPLES)), len(SAMPLES))
     for i in sample:                                         # pad with built-in samples
         if len(cards) >= n:
@@ -90,7 +96,13 @@ def pick_round(n):
         m, p, ua, _ = SAMPLES[i]
         cards.append({"id": f"syn-{i}", "method": m, "path": p, "ua": ua, "ip": "sample", "body": "",
                       "badge": "🔑 secret we issued" if SAMPLES[i][3] == "canary" else ""})
+        bk[f"syn-{i}"] = SAMPLES[i][3]
     random.shuffle(cards)
+    hard = [c for c in cards if bk[c["id"]] in ("exploit", "canary")]
+    boss = hard[-BOSS_MAX:] if len(hard) >= 3 else []      # boss wave = the nastiest cards, played last
+    for c in cards:
+        c["boss"] = c in boss
+    cards.sort(key=lambda c: c["boss"])                    # stable: boss cards move to the end
     return cards, sum(1 for c in cards if not c["id"].startswith("syn-"))
 
 
@@ -124,6 +136,7 @@ def start():
     for k in [k for k, v in RUNS.items() if time.time() - v["start"] > 1800]:
         RUNS.pop(k, None)                                  # drop abandoned runs
     RUNS[run_id] = {"start": time.time(), "last": time.time(), "pending": {c["id"] for c in cards}, "total": len(cards),
+                    "boss": {c["id"] for c in cards if c["boss"]},
                     "score": 0, "combo": 0, "best": 0, "correct": 0, "lives": LIVES, "over": False, "saved": False}
     return {"run_id": run_id, "lives": LIVES, "cards": cards, "live_events": live}
 
@@ -155,7 +168,8 @@ def answer(a: Answer):
     ok = t is not None and a.choice == t
     if ok:
         st["combo"] += 1; st["best"] = max(st["best"], st["combo"]); st["correct"] += 1
-        st["score"] += 100 + 10 * min(st["combo"] - 1, 10) + (50 if t == "canary" else 0)
+        pts = 100 + 10 * min(st["combo"] - 1, 10) + (50 if t == "canary" else 0)
+        st["score"] += pts * (2 if a.id in st["boss"] else 1)     # boss wave = double points
     else:
         st["combo"] = 0; st["lives"] -= 1
     if st["lives"] <= 0 or not st["pending"]:
@@ -178,9 +192,15 @@ def finish(f: Finish):
                 st["score"], st["correct"], st["total"]))
     rank = db.query("select count(*) as n from scores where score > ?", (st["score"],))[0]["n"] + 1
     RUNS.pop(f.run_id, None)
-    return {"score": st["score"], "correct": st["correct"], "best_combo": st["best"], "rank": int(rank)}
+    return {"score": st["score"], "correct": st["correct"], "best_combo": st["best"], "rank": int(rank),
+            "title": rank_title(st["score"])}
 
 
 @app.get("/api/leaderboard")
-def leaderboard():
-    return db.query("select name, score, correct, ts from scores order by score desc, ts asc limit 10")
+def leaderboard(period: str = "all"):
+    days = {"day": 1, "week": 7}.get(period)
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds") if days else ""
+    rows = db.query("select name, score, correct, ts from scores where ts >= ? order by score desc, ts asc limit 10", (since,))
+    for r in rows:
+        r["title"] = rank_title(r["score"])
+    return rows

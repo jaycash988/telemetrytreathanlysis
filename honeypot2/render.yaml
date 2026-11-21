@@ -26,7 +26,7 @@ services:
       - {key: DATABASE_URL, sync: false}        # SAME value as the honeypot
       - {key: DASH_TOKEN, generateValue: true}  # password for the dashboard
   - type: web
-    name: hp2-game
+    name: threat-hunter
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
