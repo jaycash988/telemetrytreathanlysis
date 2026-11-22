@@ -194,7 +194,7 @@ def _db_down(e):
 @app.get("/report")
 async def report():
     try:
-        return HTMLResponse(dashboard.render_report(await _rows()))
+        return HTMLResponse(dashboard.render_report(await _rows(), my_ips=MY_IPS))
     except Exception as e:
         return _db_down(e)
 

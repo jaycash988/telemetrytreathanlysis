@@ -54,8 +54,7 @@ def prepare(rows):
 
 # ------------------------------------------------------------------ html bits
 CSS = """
-:root{--bg:#0f1419;--panel:#171d25;--line:#2a3441;--fg:#e6e9ee;--mut:#8b97a6;--acc:#f0a30a;--ok:#3ecf8e}
-@media (prefers-color-scheme:light){:root{--bg:#f6f5f1;--panel:#fff;--line:#ddd9cf;--fg:#1b1b1a;--mut:#5f6b7a;--acc:#b36b00;--ok:#13804f}}
+:root{--bg:#121211;--panel:#1c1c1b;--line:#2c2c2a;--fg:#ececea;--mut:#8f8f8a;--acc:#c98a07;--ok:#16a37b}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 main{max-width:1100px;margin:0 auto;padding:20px 16px 48px}
 h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.1rem;margin:28px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
@@ -69,7 +68,7 @@ th{color:var(--mut);font-weight:600;white-space:nowrap}tr:last-child td{border-b
 td.n{text-align:right;font-variant-numeric:tabular-nums}code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;word-break:break-all}
 .tag{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 6px;font-size:.75rem;color:var(--mut)}
 .tag.hot{color:var(--acc);border-color:var(--acc)}.note{background:var(--panel);border-left:3px solid var(--acc);padding:10px 14px;border-radius:4px;color:var(--mut);font-size:.88rem}
-svg text{fill:var(--mut);font-size:10px}svg rect.b{fill:var(--acc)}
+.grid{display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-top:14px}.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:12px}@media(max-width:700px){.grid{grid-template-columns:1fr}.grid>.panel{grid-column:auto!important}}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow:hidden}.panel h3{font-size:.9rem;margin:0 0 8px}.donut{display:flex;align-items:center;gap:14px}.donut ul{list-style:none;margin:0;padding:0;font-size:.8rem}.donut i{display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:2px}.donut b{margin-left:4px}.hb{display:grid;grid-template-columns:110px 1fr 28px;gap:6px;align-items:center;font-size:.78rem;margin:5px 0}.hb span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--mut)}.hb div{background:#262624;height:14px;border-radius:2px}.hb u{display:block;height:100%;border-radius:2px}.hb b{font-size:.78rem}svg text{fill:var(--mut);font-size:10px}svg rect.b{fill:var(--acc)}
 """
 
 
@@ -114,63 +113,178 @@ def _timeline_svg(events):
 
 
 # -------------------------------------------------------------------- /report
-def render_report(rows, generated_at=None):
-    events, internal = prepare(rows)
-    gen = (generated_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
-    head = ("<h1>Telemetry &amp; Threat Analysis: Honeypot Findings</h1>"
-            "<p class=sub>Low-interaction web honeypot (FastAPI on Render, telemetry in Supabase Postgres). "
-            f"Computed live from the <code>events</code> table at {gen} UTC.</p>{_nav()}")
+BLUE, ORANGE, GREEN, GREY, PURPLE, AMBER, PINK = "#3b86e6", "#d9582a", "#16a37b", "#6f6e69", "#9087e8", "#c98a07", "#d6507f"
+CLASS_COLOR = {"Third-party scanner": BLUE, "Researcher test": ORANGE, "Platform check": GREEN, "Internal": GREY}
+BROWSER_UA = ("mozilla/5.0",)
+
+
+def source_class(ev, my_ips=frozenset()):
+    """Who is behind a request. Heuristic, documented on the page:
+    internal = Render's own 127.0.0.1 probes; researcher = the owner's IPs (MY_IPS) or a normal desktop/mobile
+    browser UA; platform = Go-http-client / Google-Cloud checks run by the hosting platform; scanner = the rest."""
+    ip, ua = ev["ip"], ev["ua"].lower()
+    if ip in INTERNAL_IPS:
+        return "Internal"
+    if ip in my_ips:
+        return "Researcher test"
+    if ua.startswith("go-http-client") or ip.startswith(("34.", "35.")):
+        return "Platform check"
+    if ua.startswith(BROWSER_UA) and not SCANNER_UA.search(ua):
+        return "Researcher test"
+    return "Third-party scanner"
+
+
+def _short_ua(ua):
+    u = ua.lower()
+    if not u:
+        return "(empty)"
+    for key, name in (("axios", "axios (scanner)"), ("go-http-client", "Go-http-client"), ("curl", "curl"), ("python-requests", "python-requests"),
+                      ("edg/", "Edge (Windows)" if "windows" in u else "Edge"), ("chrome", "Chrome (Windows)" if "windows" in u else "Chrome"),
+                      ("firefox", "Firefox"), ("safari", "Safari")):
+        if key in u:
+            return name
+    return ua[:30]
+
+
+def _donut(title, items, center):
+    tot = sum(v for _, v, _ in items) or 1
+    r, c, off, parts = 52, 2 * 3.14159265 * 52, 0.0, []
+    for _, v, col in items:
+        ln = c * v / tot
+        parts.append(f"<circle r='{r}' cx='70' cy='70' fill='none' stroke='{col}' stroke-width='22' stroke-dasharray='{ln:.2f} {c - ln:.2f}' "
+                     f"stroke-dashoffset='{-off:.2f}' transform='rotate(-90 70 70)'/>")
+        off += ln
+    leg = "".join(f"<li><i style='background:{col}'></i>{escape(l)} <b>{v}</b></li>" for l, v, col in items)
+    return (f"<div class=panel><h3>{escape(title)}</h3><div class=donut><svg viewBox='0 0 140 140' width=130 height=130 role=img>"
+            f"{''.join(parts)}<text x=70 y=77 text-anchor=middle style='fill:var(--fg);font-size:22px;font-weight:700'>{center}</text></svg>"
+            f"<ul>{leg}</ul></div></div>")
+
+
+def _hbars(title, items, color=BLUE, colors=None):
+    mx = max([v for _, v in items] or [1])
+    rows = "".join(f"<div class=hb><span title='{escape(l)}'>{escape(l)}</span><div><u style='width:{100 * v / mx:.1f}%;"
+                   f"background:{(colors or {}).get(l, color)}'></u></div><b>{v}</b></div>" for l, v in items)
+    return f"<div class=panel><h3>{escape(title)}</h3>{rows or '<p class=sub>No data</p>'}</div>"
+
+
+def _source_bars(counts):
+    order = ["Third-party scanner", "Researcher test", "Platform check", "Internal"]
+    mx = max(counts.get(k, 0) for k in order) or 1
+    bars = []
+    for i, k in enumerate(order):
+        v, x = counts.get(k, 0), 30 + i * 85
+        h = 130 * v / mx
+        bars.append(f"<rect x='{x}' y='{150 - h:.1f}' width='60' height='{h:.1f}' fill='{CLASS_COLOR[k]}'/>"
+                    f"<text x={x + 30} y={144 - h:.1f} text-anchor=middle style='fill:var(--fg)'>{v}</text>"
+                    f"<text x={x + 30} y=168 text-anchor=middle>{k.split()[0].replace('Third-party','Scanner')}</text>")
+    return f"<div class=panel><h3>Requests by source</h3><svg viewBox='0 0 380 180' width=100%>{''.join(bars)}</svg></div>"
+
+
+def _histogram(events, bin_h=6):
+    """Requests + unique IPs per 6-hour bin; long empty stretches are shaded as a logging gap."""
     if not events:
-        return _page("Honeypot analysis", head + "<p class=note>No external events recorded yet.</p>")
+        return ""
+    from datetime import timedelta
+    start = events[0]["ts"].replace(minute=0, second=0, microsecond=0)
+    start -= timedelta(hours=start.hour % bin_h)
+    n = int((events[-1]["ts"] - start).total_seconds() // (bin_h * 3600)) + 1
+    req, ipset = [0] * n, [set() for _ in range(n)]
+    for e in events:
+        i = int((e["ts"] - start).total_seconds() // (bin_h * 3600))
+        req[i] += 1
+        ipset[i].add(e["ip"])
+    w, h, L, B = 760, 190, 36, 28
+    mx = max(max(req), 4) + 3   # headroom for the legend
+    X = lambda i: L + (w - L - 10) * i / max(n - 1, 1)
+    Y = lambda v: h - B - (h - B - 12) * v / mx
+    gaps, i = [], 0
+    while i < n:                       # >= 48 h without any event
+        if req[i] == 0:
+            j = i
+            while j < n and req[j] == 0:
+                j += 1
+            if (j - i) * bin_h >= 48:
+                gaps.append((i, j - 1))
+            i = j
+        else:
+            i += 1
+    out = "".join(f"<rect x='{X(a):.1f}' y='8' width='{max(X(b) - X(a), 1):.1f}' height='{h - B - 8}' fill='#ffffff' opacity='0.05'/>"
+                  f"<text x='{(X(a) + X(b)) / 2:.1f}' y='24' text-anchor='middle'>no events / logging gap</text>" for a, b in gaps)
+    for t in range(0, mx + 1, max(1, mx // 4)):
+        out += f"<line x1='{L}' x2='{w - 10}' y1='{Y(t):.1f}' y2='{Y(t):.1f}' stroke='#2c2c2a'/><text x='{L - 6}' y='{Y(t) + 3:.1f}' text-anchor='end'>{t}</text>"
+    last = -99
+    for k in range(n):
+        t = start + timedelta(hours=k * bin_h)
+        if t.hour == 0 and k - last >= max(2, n // 10):
+            last = k
+            out += f"<text x='{X(k):.1f}' y='{h - 10}' text-anchor='middle'>{t:%d %b}</text>"
+    for series, col in ((req, PINK), ([len(x) for x in ipset], GREEN)):
+        pts = " ".join(f"{X(k):.1f},{Y(v):.1f}" for k, v in enumerate(series))
+        out += f"<polyline points='{pts}' fill='none' stroke='{col}' stroke-width='2'/>" + "".join(
+            f"<circle cx='{X(k):.1f}' cy='{Y(v):.1f}' r='2.5' fill='{col}'><title>{(start + timedelta(hours=k * bin_h)):%d %b %H:%M} UTC: {v}</title></circle>"
+            for k, v in enumerate(series) if v)
+    out += f"<text x='{L + 8}' y='16' style='fill:{PINK}'>● Requests</text><text x='{L + 80}' y='16' style='fill:{GREEN}'>● Unique source IPs</text>"
+    return (f"<div class=panel><h3>Requests histogram ({bin_h}-hour bins, external traffic)</h3>"
+            f"<svg viewBox='0 0 {w} {h}' width='100%'>{out}</svg></div>")
 
-    ips = collections.Counter(e["ip"] for e in events)
-    cats = collections.Counter((e["category"], e["tid"], e["tname"]) for e in events)
-    paths = collections.Counter(e["path"] for e in events)
-    uas = collections.Counter((e["ua"][:90] or "(empty)") for e in events)
-    methods = collections.Counter(e["method"] for e in events)
-    creds = sum(1 for e in events if e["creds"])
-    t0, t1 = events[0]["ts"], events[-1]["ts"]
-    hours = (t1 - t0).total_seconds() / 3600
 
-    cards = [(len(events), "requests logged"), (len(ips), "unique source IPs"),
-             (sum(e["scanner_ua"] for e in events), "with scanner/tool user-agent"),
-             (creds, "credential submissions"), (f"{hours:.0f} h", "first to last event"),
-             (internal, "Render health probes (excluded)")]
-    body = head + "<h2>Summary</h2><div class=cards>" + "".join(
-        f"<div class=card><b>{v}</b><span>{escape(l)}</span></div>" for v, l in cards) + "</div>"
-    body += (f"<p class=note style='margin-top:12px'>Window: {t0:%Y-%m-%d %H:%M} → {t1:%Y-%m-%d %H:%M} UTC. "
-             "Source IPs are masked (last octet hidden). Requests to this analysis site itself are never logged. "
-             "Requests from the researcher's own test machines are included unless their IPs are listed in <code>MY_IPS</code>.</p>")
+def render_report(rows, generated_at=None, my_ips=frozenset()):
+    events, internal_n = prepare(rows)
+    all_rows = [dict(r) for r in rows]
+    gen = (generated_at or datetime.utcnow()).strftime("%d %b %Y %H:%M:%S")
+    for e in events:
+        e["source"] = source_class(e, my_ips)
+    ext = events
+    if not ext:
+        return _page("Honeypot telemetry dashboard", "<h1>Honeypot Telemetry Dashboard</h1>" + _nav() + "<p class=note>No external events recorded yet.</p>")
 
-    body += "<h2>Requests over time</h2>" + _timeline_svg(events)
+    all_ts = sorted(_ts(r["ts"]) for r in all_rows)
+    src = collections.Counter(e["source"] for e in ext)
+    src["Internal"] = internal_n
+    ips = collections.Counter(e["ip"] for e in ext)
+    ip_class = {}
+    for e in ext:
+        ip_class[e["ip"]] = e["source"]
+    lures = {e["path"] for e in ext if _is_lure(e["path"]) and e["path"] != "/"}
+    mitre = collections.Counter((e["tid"], e["tname"]) for e in ext)
+    cats = collections.Counter((e["category"], e["tid"], e["tname"]) for e in ext)
+    methods = collections.Counter(r.get("method") or "?" for r in all_rows)
+    paths = collections.Counter(e["path"] for e in ext)
+    uas = collections.Counter(_short_ua(e["ua"]) for e in ext)
+    creds = sum(1 for e in ext if e["creds"])
+
+    kpi = [(len(all_rows), "Requests logged", ""), (len(ext), "External requests", ""), (len(ips), "Unique external IPs", ""),
+           (len({i for i, c in ip_class.items() if c == "Third-party scanner"}), "Third-party scanners", BLUE),
+           (len(lures), "Lure endpoints hit", AMBER), (creds, "Credential attempts", "")]
+    body = (f"<h1>Honeypot Telemetry Dashboard</h1><p class=sub>telemetrytreathanlysis · Render + Supabase · "
+            f"{all_ts[0]:%d %b %H:%M} – {all_ts[-1]:%d %b %H:%M} UTC · live from the <code>events</code> table, refreshed {gen} UTC</p>{_nav()}"
+            "<div class=cards style='margin-top:16px'>" + "".join(
+                f"<div class=card><b style='color:{c or 'var(--fg)'}'>{v}</b><span>{l}</span></div>" for v, l, c in kpi) + "</div>")
+    body += "<div class=grid>" + _source_bars(src) + _histogram(ext) + "</div>"
+    body += "<div class=grid3>"
+    body += _donut("Source IP classification (external)", [(k, src[k], CLASS_COLOR[k]) for k in ("Third-party scanner", "Researcher test", "Platform check") if src[k]], len(ext))
+    pal = [PURPLE, BLUE, ORANGE, AMBER, GREEN, PINK, GREY]
+    body += _donut("MITRE ATT&CK technique (external)", [(f"{t} {n.split(':')[-1].strip()[:22]}", v, pal[i % 7]) for i, ((t, n), v) in enumerate(mitre.most_common(6))], len(ext))
+    body += _donut("HTTP methods (all)", [(m, v, [BLUE, GREY, GREEN, ORANGE, PURPLE][i % 5]) for i, (m, v) in enumerate(methods.most_common(5))], len(all_rows))
+    body += "</div><div class=grid3>"
+    body += _hbars("Top requested paths (external)", [(p[:28], v) for p, v in paths.most_common(8)], BLUE,
+                   {p[:28]: AMBER for p in paths if _is_lure(p) and p != "/"})
+    body += _hbars("Top user-agents (external)", uas.most_common(6), PURPLE)
+    iprows = "".join(f"<tr><td><code>{escape(mask_ip(ip))}</code></td><td style='color:{CLASS_COLOR[ip_class[ip]]}'>● {ip_class[ip]}</td><td class=n>{v}</td></tr>"
+                     for ip, v in ips.most_common(8))
+    body += f"<div class=panel><h3>Top source IPs (external, masked)</h3><table><tr><th>IP</th><th>Class</th><th>Req</th></tr>{iprows}</table></div></div>"
 
     body += "<h2>Attack categories → MITRE ATT&amp;CK</h2>" + _table(
         ["Category (what the client was doing)", "Technique", "Name", "Events"],
-        [(escape(c), f"<span class='tag hot'>{escape(t)}</span>", escape(n), k) for (c, t, n), k in cats.most_common()],
-        num_cols=(3,))
-
-    body += "<h2>Most requested paths</h2>" + _table(
-        ["Path", "Hits", "Lure served"],
-        [(f"<code>{escape(p[:120])}</code>", k, "yes" if _is_lure(p) else "404") for p, k in paths.most_common(20)],
-        num_cols=(1,))
-
-    per_ip = []
-    for ip, k in ips.most_common(15):
-        ev = [e for e in events if e["ip"] == ip]
-        per_ip.append((f"<code>{escape(mask_ip(ip))}</code>", k, f"{ev[0]['ts']:%d %b %H:%M}",
-                       escape(", ".join(sorted({e['category'] for e in ev}))[:110]),
-                       "yes" if any(e["scanner_ua"] for e in ev) else "no"))
-    body += "<h2>Source IPs</h2>" + _table(["IP (masked)", "Requests", "First seen (UTC)", "Behaviour", "Tool UA"], per_ip, num_cols=(1,))
-
-    body += "<h2>User-agents</h2>" + _table(["User-Agent", "Requests"], [(f"<code>{escape(u)}</code>", k) for u, k in uas.most_common(10)], num_cols=(1,))
-    body += "<h2>HTTP methods</h2>" + _table(["Method", "Requests"], [(escape(m), k) for m, k in methods.most_common()], num_cols=(1,))
-
-    body += ("<h2>How this was produced</h2><p class=note>Every request to a non-reserved path is written to the <code>events</code> table by "
-             "<code>app.py</code> (timestamp, resolved client IP, raw X-Forwarded-For, method, path, query, user-agent, header names, body ≤ 4 KB). "
-             "<code>classify.py</code> maps each event to a MITRE ATT&amp;CK technique from payload and path rules; this page and "
-             "<code>analyze.py</code> use the same rules. See the <a href='/logs' style='color:var(--acc)'>raw event log</a> for the underlying rows "
-             "and the <a href='/report.pdf' style='color:var(--acc)'>written report</a> for methodology, interpretation and limitations.</p>")
-    return _page("Honeypot analysis", body)
+        [(escape(c), f"<span class='tag hot'>{escape(t)}</span>", escape(n), k) for (c, t, n), k in cats.most_common()], num_cols=(3,))
+    body += ("<h2>How to read this</h2><p class=note>Every request to a non-reserved path is stored by <code>app.py</code> (UTC time, resolved client IP, raw "
+             "X-Forwarded-For, method, path, query, user-agent, header names, body ≤ 4 KB). <code>classify.py</code> maps each event to a MITRE ATT&amp;CK "
+             "technique. <b>Source classes:</b> <i>Internal</i> = Render's own 127.0.0.1 health probes (counted in “requests logged”, excluded from "
+             "external); <i>Platform check</i> = Go-http-client / Google-Cloud (34.x, 35.x) post-deploy checks; <i>Researcher test</i> = the owner's IPs "
+             "(<code>MY_IPS</code>) or a normal browser user-agent; <i>Third-party scanner</i> = everything else. IPs are masked on this public page. "
+             "Raw rows: <a href='/logs' style='color:var(--acc)'>/logs</a> · JSON: <a href='/logs.json' style='color:var(--acc)'>/logs.json</a> · "
+             "written report: <a href='/report.pdf' style='color:var(--acc)'>PDF</a>.</p>")
+    return _page("Honeypot telemetry dashboard", body)
 
 
 def _is_lure(p):
