@@ -126,7 +126,7 @@ def source_class(ev, my_ips=frozenset()):
     ip, ua = ev["ip"], ev["ua"].lower()
     if ip in INTERNAL_IPS:
         return "Internal"
-    if ip in my_ips:
+    if ip in my_ips or ev.get("is_mine"):
         return "Researcher test"
     if ua.startswith("go-http-client") or ip.startswith(("34.", "35.")):
         return "Platform check"

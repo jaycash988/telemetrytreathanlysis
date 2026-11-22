@@ -184,7 +184,7 @@ async def _rows():
     """All stored events, cached 30 s so refreshes don't hammer the free-tier DB."""
     if time.time() - _cache["t"] > 30:
         rows = await asyncio.to_thread(_fetch_rows)
-        _cache.update(t=time.time(), rows=[r for r in rows if not r.get("is_mine")])  # drop IPs listed in MY_IPS
+        _cache.update(t=time.time(), rows=rows)   # own visits stay in, labelled "Researcher test"
     return _cache["rows"]
 
 def _db_down(e):
