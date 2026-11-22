@@ -68,6 +68,7 @@ Events with `ip = 127.0.0.1` come from Render's own in-container health probes (
 |---|---|
 | Repository | `jaycash988/telemetrytreathanlysis` (GitHub) |
 | Platform | Render web service, Python runtime, free plan, region Frankfurt |
+| Public IP addresses | `216.24.57.16` and `216.24.57.18` (resolved with `nslookup` on 22 Nov 2026). The hostname is a CNAME to `gcp-us-west-1.origin.onrender.com`, which in turn points at Cloudflare's CDN: `telemetrytreathanlysis-tj0r.onrender.com` → `gcp-us-west-1.origin.onrender.com` → `gcp-us-west-1.origin.onrender.com.cdn.cloudflare.net` → `216.24.57.16`, `216.24.57.18`. A free Render web service has no dedicated IP, so these shared addresses can change. |
 | Build / start | `pip install -r requirements.txt` / `uvicorn app:app --host 0.0.0.0 --port $PORT --no-server-header` |
 | Health check | `/healthz` (unlogged) |
 | Environment variables | `DATABASE_URL` (Supabase Session pooler URI), `EXPORT_TOKEN` (secret path for `/_export/<token>`), `MY_IPS` (own test IPs; left empty), `PYTHON_VERSION=3.11.9` |
