@@ -1,6 +1,6 @@
 # Telemetry and Threat Analysis: A Low-Interaction Web Honeypot on Render
 
-> **Draft.** Items marked **[TODO]** need your input: screenshots, and confirmation of which IPs were your own test machines.
+> **Draft.** Items marked **[TODO]** still need screenshots.
 
 ## 1. Introduction and objectives
 
@@ -50,15 +50,15 @@ Behind Render, the TCP peer the app sees is a proxy, not the client. `client_ip(
 
 The raw `X-Forwarded-For` value is always stored alongside, because a client can pre-fill that header to spoof an address.
 
-**Verification.** A test request was made from a known machine and compared with the stored row. Example row (event `081ae5d54835`, 12 Nov 2026 14:32:15 UTC, `GET /.env`):
+**Verification.** The researcher visited the site from a known machine and the stored row was compared with it. The researcher reported their public IP as `154.120.118.179` (masked below). Example row (event `cc8fe876ba92`, 22 Nov 2026 20:39:39 UTC, `GET /`, Windows Chrome):
 
 | Field | Value |
 |---|---|
-| `ip` (resolved) | `41.217.22.x` |
-| `xff` (raw) | `41.217.22.x, 104.22.76.130, 10.31.219.77` |
+| `ip` (resolved) | `154.120.118.x` |
+| `xff` (raw) | `154.120.118.x, 172.68.247.11, 10.27.115.103` |
 | Headers present | `cf-connecting-ip`, `true-client-ip`, `cf-ipcountry`, `x-forwarded-for`, `rndr-id` |
 
-The chain reads **client → Cloudflare edge (104.22.x.x) → Render internal (10.x.x.x)**, and the app correctly resolved the left-most public address. **[TODO: confirm this matches the IP shown at https://ifconfig.me on your machine at the time, and add a screenshot of the Supabase row.]**
+The chain reads **client → Cloudflare edge (172.68.x.x) → Render internal (10.x.x.x)**, and the app correctly resolved the left-most public address, which equals the IP the researcher reported. The same machine's four requests (20:39:39 to 20:39:53 UTC) all resolved to that address. **[TODO: add a screenshot of the Supabase row and of https://ifconfig.me from that machine.]**
 
 Events with `ip = 127.0.0.1` come from Render's own in-container health probes (`HEAD /` with `Go-http-client/1.1`). This matches the design: no forwarding headers, peer equals loopback.
 
@@ -102,7 +102,7 @@ All figures exclude the 9 internal Render health probes from `127.0.0.1`.
 
 | Group | IPs | Requests | Evidence |
 |---|---|---|---|
-| Researcher verification tests | 3 (`41.217.22.x`, `41.217.4.x`, `154.118.104.x`) | 14 | Desktop Chrome/Edge browsers; referers show manual visits to `/`, `/.env` and `/healthz`. **[TODO: confirm these were you]** |
+| Browser visits (not attributed) | 3 (`41.217.22.x`, `41.217.4.x`, `154.118.104.x`) | 14 | Desktop Chrome/Edge browsers; referers show manual visits to `/`, `/.env` and `/healthz`. The researcher confirmed these are **not** their own IPs, so they are unidentified human visitors (for example, other people who opened the link). Their identity is not established. |
 | Hosting-platform checks (inferred) | 6 Google Cloud addresses (`34.x`, `35.x`) | 7 | `GET /` with `Go-http-client/2.0`, each arriving 1–9 seconds after a new instance started up; consistent with an automated post-deploy reachability check |
 | **Third-party automated scanner** | 1 (`18.197.27.216`, AWS eu-central-1 range) | 11 | See below |
 
@@ -132,8 +132,8 @@ Geolocation was not available when the charts were generated (ip-api.com unreach
 |---|---|---|---|
 | Enumeration of common site paths (`/login`, `/register`, `/cart`, `/blog`, …) | T1595.003 Active Scanning: Wordlist Scanning | 7 | Scanner |
 | Probing admin portals (`/admin`, `/wp-admin`) | T1595.002 Active Scanning: Vulnerability Scanning | 2 | Scanner |
-| Fetching `/`, `/favicon.ico` to fingerprint the host | T1592 Gather Victim Host Information | 21 | Mixed (mostly researcher tests and platform checks) |
-| Request for `/.env` | T1552.001 Unsecured Credentials: Credentials In Files | 1 | Researcher test |
+| Fetching `/`, `/favicon.ico` to fingerprint the host | T1592 Gather Victim Host Information | 21 | Mixed (mostly browser visits and platform checks) |
+| Request for `/.env` | T1552.001 Unsecured Credentials: Credentials In Files | 1 | Browser visit (not attributed) |
 
 Lures that were never triggered by third parties: credential brute force (T1110), web-shell probing (T1505.003), IoT/router exploitation (T1190), backup hunting.
 

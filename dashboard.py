@@ -115,14 +115,15 @@ def _timeline_svg(events):
 
 # -------------------------------------------------------------------- /report
 BLUE, ORANGE, GREEN, GREY, PURPLE, AMBER, PINK = "#3b86e6", "#d9582a", "#16a37b", "#6f6e69", "#9087e8", "#c98a07", "#d6507f"
-CLASS_COLOR = {"Third-party scanner": BLUE, "Researcher test": ORANGE, "Platform check": GREEN, "Internal": GREY}
+CLASS_COLOR = {"Third-party scanner": BLUE, "Browser visit": ORANGE, "Researcher test": "#5bc0d6", "Platform check": GREEN, "Internal": GREY}
 BROWSER_UA = ("mozilla/5.0",)
 
 
 def source_class(ev, my_ips=frozenset()):
     """Who is behind a request. Heuristic, documented on the page:
-    internal = Render's own 127.0.0.1 probes; researcher = the owner's IPs (MY_IPS) or a normal desktop/mobile
-    browser UA; platform = Go-http-client / Google-Cloud checks run by the hosting platform; scanner = the rest."""
+    internal = Render's own 127.0.0.1 probes; researcher = only the owner's confirmed IPs (MY_IPS / is_mine);
+    browser visit = a normal browser UA from an unidentified person; platform = Go-http-client / Google-Cloud checks
+    run by the hosting platform; scanner = the rest."""
     ip, ua = ev["ip"], ev["ua"].lower()
     if ip in INTERNAL_IPS:
         return "Internal"
@@ -131,7 +132,7 @@ def source_class(ev, my_ips=frozenset()):
     if ua.startswith("go-http-client") or ip.startswith(("34.", "35.")):
         return "Platform check"
     if ua.startswith(BROWSER_UA) and not SCANNER_UA.search(ua):
-        return "Researcher test"
+        return "Browser visit"
     return "Third-party scanner"
 
 
@@ -169,11 +170,11 @@ def _hbars(title, items, color=BLUE, colors=None):
 
 
 def _source_bars(counts):
-    order = ["Third-party scanner", "Researcher test", "Platform check", "Internal"]
+    order = [k for k in ("Third-party scanner", "Browser visit", "Researcher test", "Platform check", "Internal") if k == "Browser visit" or counts.get(k, 0) or k in ("Third-party scanner", "Platform check", "Internal")]
     mx = max(counts.get(k, 0) for k in order) or 1
     bars = []
     for i, k in enumerate(order):
-        v, x = counts.get(k, 0), 30 + i * 85
+        v, x = counts.get(k, 0), 20 + i * (340 // len(order))
         h = 130 * v / mx
         bars.append(f"<rect x='{x}' y='{150 - h:.1f}' width='60' height='{h:.1f}' fill='{CLASS_COLOR[k]}'/>"
                     f"<text x={x + 30} y={144 - h:.1f} text-anchor=middle style='fill:var(--fg)'>{v}</text>"
@@ -263,7 +264,7 @@ def render_report(rows, generated_at=None, my_ips=frozenset()):
                 f"<div class=card><b style='color:{c or 'var(--fg)'}'>{v}</b><span>{l}</span></div>" for v, l, c in kpi) + "</div>")
     body += "<div class=grid>" + _source_bars(src) + _histogram(ext) + "</div>"
     body += "<div class=grid3>"
-    body += _donut("Source IP classification (external)", [(k, src[k], CLASS_COLOR[k]) for k in ("Third-party scanner", "Researcher test", "Platform check") if src[k]], len(ext))
+    body += _donut("Source IP classification (external)", [(k, src[k], CLASS_COLOR[k]) for k in ("Third-party scanner", "Browser visit", "Researcher test", "Platform check") if src[k]], len(ext))
     pal = [PURPLE, BLUE, ORANGE, AMBER, GREEN, PINK, GREY]
     body += _donut("MITRE ATT&CK technique (external)", [(f"{t} {n.split(':')[-1].strip()[:22]}", v, pal[i % 7]) for i, ((t, n), v) in enumerate(mitre.most_common(6))], len(ext))
     body += _donut("HTTP methods (all)", [(m, v, [BLUE, GREY, GREEN, ORANGE, PURPLE][i % 5]) for i, (m, v) in enumerate(methods.most_common(5))], len(all_rows))
@@ -281,8 +282,8 @@ def render_report(rows, generated_at=None, my_ips=frozenset()):
     body += ("<h2>How to read this</h2><p class=note>Every request to a non-reserved path is stored by <code>app.py</code> (UTC time, resolved client IP, raw "
              "X-Forwarded-For, method, path, query, user-agent, header names, body ≤ 4 KB). <code>classify.py</code> maps each event to a MITRE ATT&amp;CK "
              "technique. <b>Source classes:</b> <i>Internal</i> = Render's own 127.0.0.1 health probes (counted in “requests logged”, excluded from "
-             "external); <i>Platform check</i> = Go-http-client / Google-Cloud (34.x, 35.x) post-deploy checks; <i>Researcher test</i> = the owner's IPs "
-             "(<code>MY_IPS</code>) or a normal browser user-agent; <i>Third-party scanner</i> = everything else. IPs are masked on this public page. "
+             "external); <i>Platform check</i> = Go-http-client / Google-Cloud (34.x, 35.x) post-deploy checks; <i>Browser visit</i> = a normal browser user-agent from an "
+             "unidentified person (not attributed); <i>Researcher test</i> = only the owner's confirmed IPs (<code>MY_IPS</code>); <i>Third-party scanner</i> = everything else. IPs are masked on this public page. "
              "Raw rows: <a href='/logs' style='color:var(--acc)'>/logs</a> · JSON: <a href='/logs.json' style='color:var(--acc)'>/logs.json</a> · "
              "written report: <a href='/writeup' style='color:var(--acc)'>/writeup</a> (<a href='/report.pdf' style='color:var(--acc)'>PDF</a>).</p>")
     return _page("Honeypot telemetry dashboard", body)
