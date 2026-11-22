@@ -9,13 +9,15 @@ Nothing here executes attacker input; all credentials/keys below are fake.
 Requires schema.sql to have been run once against the Supabase database
 (Supabase dashboard -> SQL Editor -> paste schema.sql -> Run).
 """
-import asyncio, ipaddress, json, os, secrets, uuid
+import asyncio, ipaddress, json, os, secrets, time, uuid
 from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 from psycopg_pool import ConnectionPool
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
+
+import dashboard
 
 DATABASE_URL = os.environ["DATABASE_URL"]  # Supabase: Project Settings -> Database -> Connection string (URI, Session pooler)
 EXPORT_TOKEN = os.getenv("EXPORT_TOKEN", "")
@@ -158,13 +160,64 @@ def build_response(path: str, method: str) -> Response:
     if p.startswith(("/admin", "/administrator", "/login", "/manager", "/console", "/cpanel", "/boaform", "/signin", "/user/login")):
         return HTMLResponse(login_page("Administration Portal", err), headers=hdr)
     if p == "/":
-        return HTMLResponse("<html><head><title>Welcome</title></head><body><h1>It works!</h1></body></html>", headers=hdr)
+        return HTMLResponse("<html><head><title>Welcome</title></head><body><h1>It works!</h1>"
+                            "<p style='font:12px sans-serif;color:#888'>Telemetry &amp; Threat Analysis honeypot project &middot; "
+                            "<a href='/report'>view analysis</a> &middot; <a href='/logs'>event log</a></p></body></html>", headers=hdr)
     return HTMLResponse(NOT_FOUND, status_code=404, headers=hdr)
 
 # ------------------------------------------------------------------- routes
 @app.api_route("/healthz", methods=["GET", "HEAD"])   # UptimeRobot sends HEAD as well as GET
 async def healthz():           # Render health check + uptime pinger; NOT logged
     return PlainTextResponse("ok")
+
+# ------------------------------------------- read-only analysis pages (NOT logged)
+_cache = {"t": 0.0, "rows": []}
+
+def _fetch_rows():
+    with pool.connection(timeout=10) as conn:
+        cur = conn.execute("select id, ts, ip, xff, peer, method, path, query, ua, host, referer, "
+                           "content_type, header_names, body, creds, is_mine from events order by ts asc limit 50000")
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+async def _rows():
+    """All stored events, cached 30 s so refreshes don't hammer the free-tier DB."""
+    if time.time() - _cache["t"] > 30:
+        rows = await asyncio.to_thread(_fetch_rows)
+        _cache.update(t=time.time(), rows=[r for r in rows if not r.get("is_mine")])  # drop IPs listed in MY_IPS
+    return _cache["rows"]
+
+def _db_down(e):
+    print("HP-DB-ERROR " + str(e), flush=True)
+    return HTMLResponse("<h1>Telemetry database temporarily unavailable</h1><p>Please refresh in a minute.</p>", status_code=503)
+
+@app.get("/report")
+async def report():
+    try:
+        return HTMLResponse(dashboard.render_report(await _rows()))
+    except Exception as e:
+        return _db_down(e)
+
+@app.get("/logs")
+async def logs():
+    try:
+        return HTMLResponse(dashboard.render_logs(await _rows()))
+    except Exception as e:
+        return _db_down(e)
+
+@app.get("/logs.json")
+async def logs_json():
+    try:
+        return JSONResponse(dashboard.logs_json(await _rows()))
+    except Exception as e:
+        return _db_down(e)
+
+@app.get("/report.pdf")
+async def report_pdf():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Honeypot_Report.pdf")
+    if not os.path.exists(path):
+        return HTMLResponse(NOT_FOUND, status_code=404)
+    return FileResponse(path, media_type="application/pdf", filename="Honeypot_Report.pdf")
 
 @app.get("/_export/{token}")
 async def export(token: str, limit: int = 5000):

@@ -8,6 +8,12 @@
 | render.yaml | Render blueprint (build/start command, env vars) |
 | analyze.py | Pulls events from Supabase, GeoIP, MITRE mapping, charts, report tables |
 | requirements.txt | Dependencies |
+| classify.py | MITRE ATT&CK classification rules, shared by analyze.py and the live report page |
+| dashboard.py | Renders the public, read-only analysis pages below from the `events` table |
+
+**Public analysis pages (served by the same Render app, never logged as telemetry):**
+`/report` (live analysis: totals, timeline, MITRE mapping, top paths, source IPs), `/logs` (raw event log, newest first),
+`/logs.json` (same, machine-readable) and `/report.pdf` (full written report). IPs are masked and bodies/passwords are hidden.
 
 ## 2. Set up Supabase
 1. In your `telemetrytreathanalysis` project, open **SQL Editor -> New query**, paste `schema.sql`, Run.
