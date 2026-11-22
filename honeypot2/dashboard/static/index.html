@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Honeypot Control</title>
+<style>
+:root{--bg:#0f1419;--card:#18202a;--line:#263241;--fg:#e6edf3;--mut:#8b9bb0;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--acc:#58a6ff}
+@media (prefers-color-scheme:light){:root{--bg:#f4f6f8;--card:#fff;--line:#d8dee6;--fg:#1c2530;--mut:#5b6b7e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
+h1{font-size:17px;margin:0}main{padding:16px;display:grid;gap:16px;max-width:1200px;margin:auto}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+.kpi b{display:block;font-size:26px}.kpi span,.mut{color:var(--mut);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+h2{font-size:13px;margin:0 0 10px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{padding:5px 6px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+.bar{height:8px;background:var(--acc);border-radius:4px}.row{display:grid;grid-template-columns:130px 1fr 40px;gap:8px;align-items:center;margin:5px 0}
+.sev{display:inline-block;min-width:22px;text-align:center;border-radius:4px;color:#fff;padding:1px 4px;font-weight:600}
+.s0{background:#4b5563}.s1{background:var(--acc)}.s2{background:var(--warn)}.s3{background:var(--bad)}
+.canary{border-color:var(--bad)}button,input{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+#login{max-width:340px;margin:80px auto}.hide{display:none}
+</style></head><body>
+<div id="login" class="card hide"><h2>Dashboard token</h2><input id="tok" type="password" placeholder="DASH_TOKEN" style="width:100%"><br><br><button onclick="saveTok()">Enter</button></div>
+<div id="app" class="hide">
+<header><h1>🍯 Honeypot Control</h1><span class="mut" id="stamp"></span></header>
+<main>
+<div class="kpis" id="kpis"></div>
+<div class="card canary hide" id="canbox"><h2>🚨 Canary credentials reused</h2><div id="canary"></div></div>
+<div class="grid">
+ <div class="card"><h2>Activity (per hour)</h2><div id="timeline"></div></div>
+ <div class="card"><h2>Attack categories</h2><div id="cats"></div></div>
+ <div class="card"><h2>MITRE ATT&amp;CK</h2><div id="mitre"></div></div>
+</div>
+<div class="card"><h2>Top attackers <a class="mut" href="#" id="bl">download blocklist</a></h2><div id="ips"></div></div>
+<div class="card"><h2>Live feed</h2><div id="feed"></div></div>
+</main></div>
+<script>
+let T=localStorage.getItem('tok')||'';const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function saveTok(){T=$('tok').value;localStorage.setItem('tok',T);boot()}
+async function api(p){const r=await fetch('/api/'+p,{headers:{'X-Token':T}});if(r.status==401){localStorage.removeItem('tok');$('app').classList.add('hide');$('login').classList.remove('hide');throw 0}return r.json()}
+const sev=n=>`<span class="sev s${n>=8?3:n>=5?2:n>=2?1:0}">${n}</span>`;
+function bars(rows,k,v,w){const m=Math.max(1,...rows.map(r=>r[v]));return rows.map(r=>`<div class="row"><span>${esc(r[k]||'-')}</span><div class="bar" style="width:${r[v]/m*100}%"></div><span class="mut">${r[v]}</span></div>`).join('')||'<span class="mut">no data yet</span>'}
+async function refresh(){
+ const [s,ev,ips,cats,mit,tl,can]=await Promise.all(['summary','events?limit=40','top_ips','categories','mitre','timeline','canaries'].map(api));
+ $('kpis').innerHTML=[['Events',s.events],['Unique IPs',s.ips],['High severity',s.high],['Canary hits',s.canary]].map(([a,b])=>`<div class="card kpi"><b>${b}</b><span>${a}</span></div>`).join('');
+ $('stamp').textContent='last event: '+(s.last_event||'none')+' · refreshed '+new Date().toLocaleTimeString();
+ $('timeline').innerHTML=bars(tl.slice(-12).map(r=>({h:r.hour.slice(5).replace('T',' ')+'h',n:r.n})),'h','n');
+ $('cats').innerHTML=bars(cats,'category','n');$('mitre').innerHTML=bars(mit,'mitre','n');
+ $('ips').innerHTML='<table><tr><th>IP</th><th>Country</th><th>Hits</th><th>Score</th><th>Last seen</th><th></th></tr>'+ips.map(r=>`<tr><td>${esc(r.ip)}</td><td>${esc(r.country||'?')}</td><td>${r.hits}</td><td>${r.score}</td><td>${esc(r.last_seen)}</td><td>${r.blocked?'blocked':`<button onclick="blk('${esc(r.ip)}')">block</button>`}</td></tr>`).join('')+'</table>';
+ $('feed').innerHTML='<table><tr><th>Time</th><th>Sev</th><th>IP</th><th>Request</th><th>Category</th><th>Tags</th></tr>'+ev.map(r=>`<tr><td>${esc(r.ts.slice(11,19))}</td><td>${sev(r.severity)}</td><td>${esc(r.ip)}</td><td>${esc(r.method)} ${esc(r.path.slice(0,60))}</td><td>${esc(r.category)}</td><td>${esc(r.tags.join(', '))}</td></tr>`).join('')+'</table>';
+ $('canbox').classList.toggle('hide',!can.length);
+ $('canary').innerHTML=can.map(c=>`<div>${esc(c.ts)} — <b>${esc(c.ip)}</b> used a ${esc(c.kind)} secret issued to <b>${esc(c.issued_to)}</b> via ${esc(c.method)} ${esc(c.path)}</div>`).join('');
+}
+async function blk(ip){await fetch('/api/block/'+ip,{method:'POST',headers:{'X-Token':T}});refresh()}
+$('bl').onclick=e=>{e.preventDefault();window.open('/api/blocklist.txt?token='+encodeURIComponent(T))}
+function boot(){$('login').classList.add('hide');$('app').classList.remove('hide');refresh().catch(()=>{});setInterval(()=>refresh().catch(()=>{}),5000)}
+T?boot():$('login').classList.remove('hide');
+</script></body></html>
