@@ -78,7 +78,8 @@ def _page(title, body):
 
 
 def _nav():
-    return "<nav><a href='/report'>Analysis</a><a href='/logs'>Event log</a><a href='/logs.json'>Log (JSON)</a><a href='/report.pdf'>Full written report (PDF)</a></nav>"
+    return ("<nav><a href='/report'>Live dashboard</a><a href='/writeup'>Written report</a><a href='/logs'>Event log</a>"
+            "<a href='/logs.json'>Log (JSON)</a><a href='/report.pdf'>Report (PDF)</a></nav>")
 
 
 def _table(headers, rows, num_cols=()):
@@ -283,7 +284,7 @@ def render_report(rows, generated_at=None, my_ips=frozenset()):
              "external); <i>Platform check</i> = Go-http-client / Google-Cloud (34.x, 35.x) post-deploy checks; <i>Researcher test</i> = the owner's IPs "
              "(<code>MY_IPS</code>) or a normal browser user-agent; <i>Third-party scanner</i> = everything else. IPs are masked on this public page. "
              "Raw rows: <a href='/logs' style='color:var(--acc)'>/logs</a> · JSON: <a href='/logs.json' style='color:var(--acc)'>/logs.json</a> · "
-             "written report: <a href='/report.pdf' style='color:var(--acc)'>PDF</a>.</p>")
+             "written report: <a href='/writeup' style='color:var(--acc)'>/writeup</a> (<a href='/report.pdf' style='color:var(--acc)'>PDF</a>).</p>")
     return _page("Honeypot telemetry dashboard", body)
 
 
@@ -314,3 +315,19 @@ def logs_json(rows, limit=5000):
     return [{"ts": e["ts"].isoformat(), "ip": mask_ip(e["ip"]), "method": e["method"], "path": e["path"], "query": e["query"],
              "ua": e["ua"], "category": e["category"], "mitre_id": e["tid"], "mitre_name": e["tname"],
              "credential_attempt": bool(e["creds"])} for e in reversed(events)][:limit]
+
+
+# -------------------------------------------------------------------- /writeup
+WRITEUP_CSS = (".md h1{font-size:1.6rem;margin:0 0 8px}.md h2{font-size:1.2rem;margin:30px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}"
+               ".md img{max-width:100%;display:block;margin:14px auto;border:1px solid var(--line);border-radius:6px;background:#fff}"
+               ".md table{margin:10px 0;display:block;overflow-x:auto}.md blockquote{margin:12px 0;padding:8px 14px;border-left:3px solid var(--acc);background:var(--panel);color:var(--mut)}"
+               ".md pre{background:var(--panel);border:1px solid var(--line);padding:10px;border-radius:6px;overflow-x:auto}.md a{color:var(--acc)}.md p,.md li{max-width:80ch}")
+
+
+def render_writeup(md_text):
+    """The written project report (REPORT.md) as a web page, so the deployed URL carries the full write-up."""
+    import markdown
+    html = markdown.markdown(md_text, extensions=["tables", "fenced_code", "sane_lists"])
+    html = html.replace('src="results/charts/', 'src="/results/charts/')
+    page = _page("Honeypot project report", f"{_nav()}<div class=md style='margin-top:12px'>{html}</div>")
+    return page.replace("</style>", WRITEUP_CSS + "</style>", 1)

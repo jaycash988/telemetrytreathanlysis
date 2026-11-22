@@ -162,7 +162,7 @@ def build_response(path: str, method: str) -> Response:
     if p == "/":
         return HTMLResponse("<html><head><title>Welcome</title></head><body><h1>It works!</h1>"
                             "<p style='font:12px sans-serif;color:#888'>Telemetry &amp; Threat Analysis honeypot project &middot; "
-                            "<a href='/report'>view analysis</a> &middot; <a href='/logs'>event log</a></p></body></html>", headers=hdr)
+                            "<a href='/report'>live dashboard</a> &middot; <a href='/writeup'>written report</a> &middot; <a href='/logs'>event log</a></p></body></html>", headers=hdr)
     return HTMLResponse(NOT_FOUND, status_code=404, headers=hdr)
 
 # ------------------------------------------------------------------- routes
@@ -211,6 +211,23 @@ async def logs_json():
         return JSONResponse(dashboard.logs_json(await _rows()))
     except Exception as e:
         return _db_down(e)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+@app.get("/writeup")
+async def writeup():
+    path = os.path.join(BASE_DIR, "REPORT.md")
+    if not os.path.exists(path):
+        return HTMLResponse(NOT_FOUND, status_code=404)
+    with open(path, encoding="utf-8") as f:
+        return HTMLResponse(dashboard.render_writeup(f.read()))
+
+@app.get("/results/charts/{name}")
+async def chart(name: str):
+    path = os.path.join(BASE_DIR, "results", "charts", os.path.basename(name))   # basename blocks ../ traversal
+    if not name.endswith(".png") or not os.path.isfile(path):
+        return HTMLResponse(NOT_FOUND, status_code=404)
+    return FileResponse(path, media_type="image/png")
 
 @app.get("/report.pdf")
 async def report_pdf():
