@@ -3,9 +3,6 @@ h1{font-size:20pt;margin:0 0 6pt}h2{font-size:14pt;margin:18pt 0 6pt;border-bott
 table{border-collapse:collapse;width:100%;margin:6pt 0 10pt;font-size:9pt;page-break-inside:avoid}th,td{border:1px solid #d6d5d0;padding:4pt 6pt;text-align:left;vertical-align:top}th{background:#f1f0ec}
 code{font-family:Menlo,Consolas,monospace;font-size:8.8pt;background:#f3f2ee;padding:0 2pt}pre{background:#f3f2ee;padding:8pt;font-size:8.3pt;overflow:hidden;page-break-inside:avoid}pre code{background:none}
 img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockquote{border-left:3px solid #eda100;margin:0;padding:2pt 10pt;background:#fdf6e6}</style></head><body><h1>Telemetry and Threat Analysis: A Low-Interaction Web Honeypot on Render</h1>
-<blockquote>
-<p><strong>Draft.</strong> Items marked <strong>[TODO]</strong> need your input: screenshots, and confirmation of which IPs were your own test machines.</p>
-</blockquote>
 <h2>1. Introduction and objectives</h2>
 <p>The project deployed a low-interaction web honeypot to the public Internet to observe what automated clients do when they find a newly published web server. The objectives were to:</p>
 <ol>
@@ -123,7 +120,7 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 <li>The socket peer, as a last resort.</li>
 </ol>
 <p>The raw <code>X-Forwarded-For</code> value is always stored alongside, because a client can pre-fill that header to spoof an address.</p>
-<p><strong>Verification.</strong> A test request was made from a known machine and compared with the stored row. Example row (event <code>081ae5d54835</code>, 12 Nov 2026 14:32:15 UTC, <code>GET /.env</code>):</p>
+<p><strong>Verification.</strong> The researcher visited the site from a known machine and the stored row was compared with it. The researcher checked their public IP at https://ifconfig.me, which showed <code>154.120.118.179</code> (masked below). Example row (event <code>cc8fe876ba92</code>, 22 Nov 2026 20:39:39 UTC, <code>GET /</code>, Windows Chrome):</p>
 <table>
 <thead>
 <tr>
@@ -134,11 +131,11 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 <tbody>
 <tr>
 <td><code>ip</code> (resolved)</td>
-<td><code>41.217.22.x</code></td>
+<td><code>154.120.118.x</code></td>
 </tr>
 <tr>
 <td><code>xff</code> (raw)</td>
-<td><code>41.217.22.x, 104.22.76.130, 10.31.219.77</code></td>
+<td><code>154.120.118.x, 172.68.247.11, 10.27.115.103</code></td>
 </tr>
 <tr>
 <td>Headers present</td>
@@ -146,7 +143,7 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 </tr>
 </tbody>
 </table>
-<p>The chain reads <strong>client → Cloudflare edge (104.22.x.x) → Render internal (10.x.x.x)</strong>, and the app correctly resolved the left-most public address. <strong>[TODO: confirm this matches the IP shown at https://ifconfig.me on your machine at the time, and add a screenshot of the Supabase row.]</strong></p>
+<p>The chain reads <strong>client → Cloudflare edge (172.68.x.x) → Render internal (10.x.x.x)</strong>, and the app correctly resolved the left-most public address, which equals the IP ifconfig.me reported for that machine. The same machine's four requests (20:39:39 to 20:39:53 UTC) all resolved to that address. The stored rows can be inspected at <code>/logs</code> on the live site, and in the Supabase <code>events</code> table.</p>
 <p>Events with <code>ip = 127.0.0.1</code> come from Render's own in-container health probes (<code>HEAD /</code> with <code>Go-http-client/1.1</code>). This matches the design: no forwarding headers, peer equals loopback.</p>
 <h2>5. Deployment</h2>
 <table>
@@ -166,6 +163,10 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 <td>Render web service, Python runtime, free plan, region Frankfurt</td>
 </tr>
 <tr>
+<td>Public IP addresses</td>
+<td><code>216.24.57.16</code> and <code>216.24.57.18</code> (resolved with <code>nslookup</code> on 22 Nov 2026). The hostname is a CNAME to <code>gcp-us-west-1.origin.onrender.com</code>, which in turn points at Cloudflare's CDN: <code>telemetrytreathanlysis-tj0r.onrender.com</code> → <code>gcp-us-west-1.origin.onrender.com</code> → <code>gcp-us-west-1.origin.onrender.com.cdn.cloudflare.net</code> → <code>216.24.57.16</code>, <code>216.24.57.18</code>. A free Render web service has no dedicated IP, so these shared addresses can change.</td>
+</tr>
+<tr>
 <td>Build / start</td>
 <td><code>pip install -r requirements.txt</code> / <code>uvicorn app:app --host 0.0.0.0 --port $PORT --no-server-header</code></td>
 </tr>
@@ -183,7 +184,7 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 </tr>
 </tbody>
 </table>
-<p><strong>[TODO screenshots: Render build log, Render service page with URL, Supabase <code>events</code> table, Render logs showing <code>HP {...}</code> lines.]</strong></p>
+<p><strong>Evidence.</strong> The running service is the public URL above. Its stored telemetry can be checked at <code>/logs</code> and <code>/logs.json</code>, and the live analysis at <code>/report</code>. The Render build log and <code>HP {...}</code> log lines are in the Render dashboard for the service.</p>
 <h2>6. Observation window</h2>
 <table>
 <thead>
@@ -256,10 +257,10 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 </thead>
 <tbody>
 <tr>
-<td>Researcher verification tests</td>
+<td>Browser visits (not attributed)</td>
 <td>3 (<code>41.217.22.x</code>, <code>41.217.4.x</code>, <code>154.118.104.x</code>)</td>
 <td>14</td>
-<td>Desktop Chrome/Edge browsers; referers show manual visits to <code>/</code>, <code>/.env</code> and <code>/healthz</code>. <strong>[TODO: confirm these were you]</strong></td>
+<td>Desktop Chrome/Edge browsers; referers show manual visits to <code>/</code>, <code>/.env</code> and <code>/healthz</code>. The researcher confirmed these are <strong>not</strong> their own IPs, so they are unidentified human visitors (for example, other people who opened the link). Their identity is not established.</td>
 </tr>
 <tr>
 <td>Hosting-platform checks (inferred)</td>
@@ -312,13 +313,13 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 <td>Fetching <code>/</code>, <code>/favicon.ico</code> to fingerprint the host</td>
 <td>T1592 Gather Victim Host Information</td>
 <td>21</td>
-<td>Mixed (mostly researcher tests and platform checks)</td>
+<td>Mixed (mostly browser visits and platform checks)</td>
 </tr>
 <tr>
 <td>Request for <code>/.env</code></td>
 <td>T1552.001 Unsecured Credentials: Credentials In Files</td>
 <td>1</td>
-<td>Researcher test</td>
+<td>Browser visit (not attributed)</td>
 </tr>
 </tbody>
 </table>
@@ -350,5 +351,5 @@ img{max-width:100%;display:block;margin:8pt auto;page-break-inside:avoid}blockqu
 <h2>11. Appendix</h2>
 <ul>
 <li>Source code: <code>app.py</code>, <code>analyze.py</code>, <code>schema.sql</code>, <code>render.yaml</code> in this repository.</li>
-<li><strong>[TODO screenshots: code in editor, local curl test, GitHub repo, Render build log, Render service page, Supabase table, Render live logs, analyze.py output, charts.]</strong></li>
+<li>Evidence: the live dashboard (<code>/report</code>), the event log (<code>/logs</code>), the source repository, and the Render and Supabase dashboards for the deployed service.</li>
 </ul></body></html>
