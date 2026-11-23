@@ -1,7 +1,5 @@
 # Telemetry and Threat Analysis: A Low-Interaction Web Honeypot on Render
 
-> **Draft.** Items marked **[TODO]** still need screenshots.
-
 ## 1. Introduction and objectives
 
 The project deployed a low-interaction web honeypot to the public Internet to observe what automated clients do when they find a newly published web server. The objectives were to:
@@ -58,7 +56,7 @@ The raw `X-Forwarded-For` value is always stored alongside, because a client can
 | `xff` (raw) | `154.120.118.x, 172.68.247.11, 10.27.115.103` |
 | Headers present | `cf-connecting-ip`, `true-client-ip`, `cf-ipcountry`, `x-forwarded-for`, `rndr-id` |
 
-The chain reads **client → Cloudflare edge (172.68.x.x) → Render internal (10.x.x.x)**, and the app correctly resolved the left-most public address, which equals the IP ifconfig.me reported for that machine. The same machine's four requests (20:39:39 to 20:39:53 UTC) all resolved to that address. **[TODO: add a screenshot of the Supabase row and of the ifconfig.me result.]**
+The chain reads **client → Cloudflare edge (172.68.x.x) → Render internal (10.x.x.x)**, and the app correctly resolved the left-most public address, which equals the IP ifconfig.me reported for that machine. The same machine's four requests (20:39:39 to 20:39:53 UTC) all resolved to that address. The stored rows can be inspected at `/logs` on the live site, and in the Supabase `events` table.
 
 Events with `ip = 127.0.0.1` come from Render's own in-container health probes (`HEAD /` with `Go-http-client/1.1`). This matches the design: no forwarding headers, peer equals loopback.
 
@@ -74,7 +72,7 @@ Events with `ip = 127.0.0.1` come from Render's own in-container health probes (
 | Environment variables | `DATABASE_URL` (Supabase Session pooler URI), `EXPORT_TOKEN` (secret path for `/_export/<token>`), `MY_IPS` (own test IPs; left empty), `PYTHON_VERSION=3.11.9` |
 | Database | Supabase project `telemetrytreathanalysis`, region eu-west-1, Postgres 17 |
 
-**[TODO screenshots: Render build log, Render service page with URL, Supabase `events` table, Render logs showing `HP {...}` lines.]**
+**Evidence.** The running service is the public URL above. Its stored telemetry can be checked at `/logs` and `/logs.json`, and the live analysis at `/report`. The Render build log and `HP {...}` log lines are in the Render dashboard for the service.
 
 ## 6. Observation window
 
@@ -168,4 +166,4 @@ The reverse-proxy work (section 4) is a positive result: the three-hop chain was
 ## 11. Appendix
 
 - Source code: `app.py`, `analyze.py`, `schema.sql`, `render.yaml` in this repository.
-- **[TODO screenshots: code in editor, local curl test, GitHub repo, Render build log, Render service page, Supabase table, Render live logs, analyze.py output, charts.]**
+- Evidence: the live dashboard (`/report`), the event log (`/logs`), the source repository, and the Render and Supabase dashboards for the deployed service.
