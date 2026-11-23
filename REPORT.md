@@ -50,7 +50,7 @@ Behind Render, the TCP peer the app sees is a proxy, not the client. `client_ip(
 
 The raw `X-Forwarded-For` value is always stored alongside, because a client can pre-fill that header to spoof an address.
 
-**Verification.** The researcher visited the site from a known machine and the stored row was compared with it. The researcher reported their public IP as `154.120.118.179` (masked below). Example row (event `cc8fe876ba92`, 22 Nov 2026 20:39:39 UTC, `GET /`, Windows Chrome):
+**Verification.** The researcher visited the site from a known machine and the stored row was compared with it. The researcher checked their public IP at https://ifconfig.me, which showed `154.120.118.179` (masked below). Example row (event `cc8fe876ba92`, 22 Nov 2026 20:39:39 UTC, `GET /`, Windows Chrome):
 
 | Field | Value |
 |---|---|
@@ -58,7 +58,7 @@ The raw `X-Forwarded-For` value is always stored alongside, because a client can
 | `xff` (raw) | `154.120.118.x, 172.68.247.11, 10.27.115.103` |
 | Headers present | `cf-connecting-ip`, `true-client-ip`, `cf-ipcountry`, `x-forwarded-for`, `rndr-id` |
 
-The chain reads **client → Cloudflare edge (172.68.x.x) → Render internal (10.x.x.x)**, and the app correctly resolved the left-most public address, which equals the IP the researcher reported. The same machine's four requests (20:39:39 to 20:39:53 UTC) all resolved to that address. **[TODO: add a screenshot of the Supabase row and of https://ifconfig.me from that machine.]**
+The chain reads **client → Cloudflare edge (172.68.x.x) → Render internal (10.x.x.x)**, and the app correctly resolved the left-most public address, which equals the IP ifconfig.me reported for that machine. The same machine's four requests (20:39:39 to 20:39:53 UTC) all resolved to that address. **[TODO: add a screenshot of the Supabase row and of the ifconfig.me result.]**
 
 Events with `ip = 127.0.0.1` come from Render's own in-container health probes (`HEAD /` with `Go-http-client/1.1`). This matches the design: no forwarding headers, peer equals loopback.
 
