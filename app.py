@@ -220,7 +220,13 @@ async def writeup():
     if not os.path.exists(path):
         return HTMLResponse(NOT_FOUND, status_code=404)
     with open(path, encoding="utf-8") as f:
-        return HTMLResponse(dashboard.render_writeup(f.read()))
+        md = f.read()
+    try:
+        rows = await _rows()
+    except Exception as e:                       # DB down: fall back to the static figure in the markdown
+        print("HP-DB-ERROR " + str(e), flush=True)
+        rows = None
+    return HTMLResponse(dashboard.render_writeup(md, live_rows=rows, my_ips=MY_IPS))
 
 @app.get("/results/charts/{name}")
 async def chart(name: str):

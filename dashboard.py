@@ -8,6 +8,7 @@ IPv6) because these pages are public.
 """
 import collections
 import ipaddress
+import re
 from datetime import datetime
 from html import escape
 
@@ -230,7 +231,8 @@ def _histogram(events, bin_h=6):
             f"<svg viewBox='0 0 {w} {h}' width='100%'>{out}</svg></div>")
 
 
-def render_report(rows, generated_at=None, my_ips=frozenset()):
+def render_report(rows, generated_at=None, my_ips=frozenset(), embed=False):
+    """embed=True returns only the dashboard panels (no page chrome) for inclusion in the written report."""
     events, internal_n = prepare(rows)
     all_rows = [dict(r) for r in rows]
     gen = (generated_at or datetime.utcnow()).strftime("%d %b %Y %H:%M:%S")
@@ -238,7 +240,8 @@ def render_report(rows, generated_at=None, my_ips=frozenset()):
         e["source"] = source_class(e, my_ips)
     ext = events
     if not ext:
-        return _page("Honeypot telemetry dashboard", "<h1>Honeypot Telemetry Dashboard</h1>" + _nav() + "<p class=note>No external events recorded yet.</p>")
+        msg = "<p class=note>No external events recorded yet.</p>"
+        return msg if embed else _page("Honeypot telemetry dashboard", "<h1>Honeypot Telemetry Dashboard</h1>" + _nav() + msg)
 
     all_ts = sorted(_ts(r["ts"]) for r in all_rows)
     src = collections.Counter(e["source"] for e in ext)
@@ -258,10 +261,14 @@ def render_report(rows, generated_at=None, my_ips=frozenset()):
     kpi = [(len(all_rows), "Requests logged", ""), (len(ext), "External requests", ""), (len(ips), "Unique external IPs", ""),
            (len({i for i, c in ip_class.items() if c == "Third-party scanner"}), "Third-party scanners", BLUE),
            (len(lures), "Lure endpoints hit", AMBER), (creds, "Credential attempts", "")]
-    body = (f"<h1>Honeypot Telemetry Dashboard</h1><p class=sub>telemetrytreathanlysis · Render + Supabase · "
-            f"{all_ts[0]:%d %b %H:%M} – {all_ts[-1]:%d %b %H:%M} UTC · live from the <code>events</code> table, refreshed {gen} UTC</p>{_nav()}"
-            "<div class=cards style='margin-top:16px'>" + "".join(
-                f"<div class=card><b style='color:{c or 'var(--fg)'}'>{v}</b><span>{l}</span></div>" for v, l, c in kpi) + "</div>")
+    cards_html = "<div class=cards style='margin-top:16px'>" + "".join(
+        f"<div class=card><b style='color:{c or 'var(--fg)'}'>{v}</b><span>{l}</span></div>" for v, l, c in kpi) + "</div>"
+    if embed:
+        body = (f"<p class=sub>Live from the <code>events</code> table · {all_ts[0]:%d %b %H:%M} – {all_ts[-1]:%d %b %H:%M} UTC · "
+                f"refreshed {gen} UTC · <a href='/report' style='color:var(--acc)'>open full dashboard</a></p>" + cards_html)
+    else:
+        body = (f"<h1>Honeypot Telemetry Dashboard</h1><p class=sub>telemetrytreathanlysis · Render + Supabase · "
+                f"{all_ts[0]:%d %b %H:%M} – {all_ts[-1]:%d %b %H:%M} UTC · live from the <code>events</code> table, refreshed {gen} UTC</p>{_nav()}" + cards_html)
     body += "<div class=grid>" + _source_bars(src) + _histogram(ext) + "</div>"
     body += "<div class=grid3>"
     body += _donut("Source IP classification (external)", [(k, src[k], CLASS_COLOR[k]) for k in ("Third-party scanner", "Browser visit", "Researcher test", "Platform check") if src[k]], len(ext))
@@ -276,6 +283,8 @@ def render_report(rows, generated_at=None, my_ips=frozenset()):
                      for ip, v in ips.most_common(8))
     body += f"<div class=panel><h3>Top source IPs (external, masked)</h3><table><tr><th>IP</th><th>Class</th><th>Req</th></tr>{iprows}</table></div></div>"
 
+    if embed:
+        return body
     body += "<h2>Attack categories → MITRE ATT&amp;CK</h2>" + _table(
         ["Category (what the client was doing)", "Technique", "Name", "Events"],
         [(escape(c), f"<span class='tag hot'>{escape(t)}</span>", escape(n), k) for (c, t, n), k in cats.most_common()], num_cols=(3,))
@@ -325,10 +334,16 @@ WRITEUP_CSS = (".md h1{font-size:1.6rem;margin:0 0 8px}.md h2{font-size:1.2rem;m
                ".md pre{background:var(--panel);border:1px solid var(--line);padding:10px;border-radius:6px;overflow-x:auto}.md a{color:var(--acc)}.md p,.md li{max-width:80ch}")
 
 
-def render_writeup(md_text):
+def render_writeup(md_text, live_rows=None, my_ips=frozenset()):
     """The written project report (REPORT.md) as a web page, so the deployed URL carries the full write-up."""
     import markdown
     html = markdown.markdown(md_text, extensions=["tables", "fenced_code", "sane_lists"])
+    if live_rows is not None:
+        live = render_report(live_rows, my_ips=my_ips, embed=True)
+        note = ("<p class=note><b>Live data.</b> This dashboard is computed from the database each time the page loads, so it covers the "
+                "whole logging period up to now. The written analysis in this report describes the snapshot of 12–18 Nov 2026, "
+                "so the live numbers can be higher than the figures quoted in the text.</p>")
+        html = re.sub(r'<p><img[^>]*fig_dashboard\.png[^>]*></p>', lambda m: f"<div class=livedash>{note}{live}</div>", html, count=1)
     html = html.replace('src="results/charts/', 'src="/results/charts/')
     page = _page("Honeypot project report", f"{_nav()}<div class=md style='margin-top:12px'>{html}</div>")
     return page.replace("</style>", WRITEUP_CSS + "</style>", 1)
